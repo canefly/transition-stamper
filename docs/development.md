@@ -51,12 +51,7 @@ Projects are keyed by project path or name, in `localStorage`.
 
 ## Tests
 
-`tests/` holds a simulated Premiere (fake timeline, fake panel DOM, fake file system) and 12 scenario tests (`node tests/run.js`). It caught real logic bugs early (an SFX-detection margin, a false "expected N clips" warning), but:
-
-- it only encodes our own understanding of the API and can't prove Premiere behaves the same;
-- it is **out of date** since the panel rewrite (new elements and flow), and nobody is maintaining it.
-
-Treat it as history, not a gate.
+There is no automated test suite. A simulated Premiere (fake timeline, fake panel, fake file system) with 12 scenario tests was tried and then removed: it caught a couple of logic bugs early, but it only encoded our own assumptions about the API and couldn't prove Premiere behaves the same, so real runs in Premiere remain the source of truth. It is still in git history (commit `1d5f9d8` and earlier) if it is ever wanted again.
 
 ## Checks
 
