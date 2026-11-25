@@ -33,8 +33,11 @@ End users do **not** need Premiere's developer mode; that is only for loading un
 
 Updating: build a new version with a higher `version`, package it with the same id, and install it over the old one.
 
+## Verified
+
+- **Install on a second machine** (a friend's): the `.ccx` went through Creative Cloud Desktop and installed (2026-11-25).
+
 ## Not yet verified
 
-- Install on a machine other than the developer's.
 - Exact Premiere 2026 build numbers it has been tried on (the author reports it works on 2026; the build wasn't recorded), and anything older than 26.0.
 - Whether Creative Cloud Desktop's "outside Marketplace" warning needs anything beyond clicking Install.
