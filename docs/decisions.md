@@ -37,6 +37,25 @@ Things that behave differently from a browser in Premiere's UXP panels:
 - **The IN/OUT dropdowns list styles, not copies.** Transitions are grouped into distinct styles (same tracks, same timing around the edge, same effects), each shown once with a count (for example `V7 + A3 · Blur, Lumetri  x24`). Listing every stamped copy produced a 48-row dropdown. Both dropdowns list the same styles so the swap button can exchange the two picks.
 - **Swap exchanges roles, not the timeline.** The swap button exchanges which style is used at block starts and which at block ends. When the picks are the exchanged versions of the defaults, both labels show a swapped tag.
 
+## Finding and aligning the center (measured, not assumed)
+
+The first versions never looked for the center. They copied the template shifted by the distance between two cuts, which is only right if the template's center was exactly on its own cut, and nothing checked that. This was changed after a read-only probe on real templates showed the center is detectable:
+
+- **Split transitions:** the two halves meet exactly on the cut (0 frames), on every track.
+- **Keyframes:** every animated effect shares one keyframe at the same instant, about 0.08 of a frame (2.7 ms) before the cut, in both transition types. Keyframe times are in the clip's *source* time (with a 1-hour offset in these templates): sequence time = clip start + (keyframe time - clip in-point). The two halves of a split map each keyframe to the same sequence position to within 0.01 frame, which independently confirms the conversion.
+- **Not readable:** clip markers (`getProjectItem()` returns nothing for adjustment layers); the whoosh has no keyframes.
+
+Decisions (agreed with the editor): split wins, then the peak keyframe, otherwise "not found" with the advice to cut the transition at its center (no marker support); a split and the keyframes must agree within 1 frame; the whoosh follows the video center at the same offset; and centering each copy on its cut is a **setting that is on by default**, because the plugin now has the center data and the footage-edge data.
+
+Arithmetic is integer **ticks** (BigInt) end to end. Ticks per frame come from `sequence.getTimebase()`. A shift is `new cut - template anchor` in ticks, where the anchor is the template's detected center (or its own cut when center alignment is off or no center is found). The plugin checks that every shift is a whole number of frames, and after a stamp it **audits** every transition: center-to-cut offset and tick-exact equality with its template, ignoring which track a copy sits on.
+
+## Template lookup and the transition track range
+
+- **Templates are found by style, on the live timeline.** The dropdowns used to store an edge number from the last scan. After a stamp the rescan picked a stamped copy as each style's representative, so after Ctrl+Z that edge was empty and every edge came out as "no template" (reported misleadingly as "already has a transition"). Stamp now rescans first, keeps the picks by style signature (so a swap survives), and resolves the template from a fresh `buildStyles`.
+- **The Setup "transitions start" track is a floor, not a single lane.** That track and every track above it are searched for transitions at block edges; a stray pair of clips on V10/V11 counted as a transition. A "highest transition track" limit was considered and dropped.
+- **Overlay mode (stamp on edges that already have a transition) is parked.** It would reuse the stacking logic, but rejected copies would have to be deleted by hand, piece by piece, because stamped copies are unlinked (see below). Revisit if Adobe adds linking to UXP.
+- **A CEP/ExtendScript helper for linking was considered and not built.** UXP can't call ExtendScript, CEP is the deprecated platform, and an unsigned CEP panel needs a debug flag.
+
 ## Known limits and open questions
 
 - **Stamped transitions are not linked.** A hand-built transition usually has its whoosh linked to the adjustment layer (and layers to each other), so nudging one moves the rest. Stamped copies are cloned piece by piece and come out **unlinked**: nudge the adjustment layer and the whoosh stays behind. Premiere's UXP API (checked through 27.0 docs and changelog) has no call to link, unlink or group clips, and `createCloneTrackItemAction` does not carry links over. Linking exists only in the legacy ExtendScript API (`Sequence.linkSelection()` and friends), which a UXP plugin cannot call. Editors can marquee-select across the tracks to move a whole transition, or press Ctrl+L on a transition's clips. Revisit if Adobe adds linking to UXP, or if a companion CEP/ExtendScript piece is ever accepted (it would reverse the UXP-only decision).

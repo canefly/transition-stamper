@@ -39,6 +39,20 @@ To stamp a new edge, the whole group is cloned, shifted by `newEdge - templateEd
 - **keyframes, effects and SFX come along** because Premiere clones the real clips;
 - different transition types work without code changes: just build a different template.
 
+## Finding the center
+
+Every transition has a **center**: the moment that must land exactly on the cut. The plugin finds it itself instead of trusting where you happened to place the template:
+
+- **Type B (split):** the transition is two halves on a transition track that meet end to end. The meeting point is the center. Only the transition tracks are examined, never the footage lane.
+- **Type A (no split):** the effects have keyframes for in, center and out. The center is the keyframe time shared by the effects, placed on the timeline using the clip's in-point and rounded to the nearest frame.
+- **Neither found:** the panel says so and suggests cutting the transition in two at its center with the razor (which makes it type B).
+- When a split and keyframes are both present, they must agree within one frame, or the panel warns.
+- Clip markers can't be read by Premiere's plugin API, so they aren't used. The whoosh can't be detected either; it is copied at the same offset from the video center.
+
+By default (Setup > Options > "Line each transition's center up on its cut") every copy is shifted so its center lands on its own cut, even if the template was a little off its cut. Turn it off to get an exact copy of the template instead.
+
+All of this is computed in **whole ticks** (exact integers), never in decimal seconds, and after every stamp the plugin **audits** the result: it measures each transition's center against its cut and every clip against its template, and reports how many are exact to the tick.
+
 ## Collisions
 
 If two transitions would overlap (for example a block ends and another starts 1.2 s later):

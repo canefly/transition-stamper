@@ -146,21 +146,34 @@ function saveTemplatePicks() {
 
 // ---------- helpers ----------
 let FPS = 30, FPS_SRC = "assumed 30";
+// TPF = ticks per frame, a whole number. All timeline arithmetic that ends up in Premiere is done in TICKS as
+// BigInt (exact integers), never in decimal seconds, so there is no rounding to drift a clip by a frame.
+let TPF = 8467200000n;
 async function initFps(sequence) {
   try {
     const fr = await (await sequence.getSettings()).getVideoFrameRate();
-    if (fr && fr.value > 0) { FPS = fr.value; FPS_SRC = "sequence settings"; return; }
+    if (fr && fr.value > 0) { FPS = fr.value; FPS_SRC = "sequence settings"; }
   } catch (e) {}
   try {
-    const f = TICKS_PER_SEC / Number(await sequence.getTimebase());
-    if (f > 0) { FPS = f; FPS_SRC = "timebase"; }
+    const tb = BigInt(await sequence.getTimebase()); // ticks per frame, as a string
+    if (tb > 0n) { TPF = tb; if (FPS_SRC.startsWith("assumed")) { FPS = TICKS_PER_SEC / Number(tb); FPS_SRC = "timebase"; } return; }
   } catch (e) {}
+  TPF = BigInt(Math.round(TICKS_PER_SEC / FPS));
 }
+// exact time in ticks (BigInt) from a TickTime
+function tk(t) {
+  try { if (t && t.ticks != null) return BigInt(t.ticks); } catch (e) {}
+  return BigInt(Math.round(secs(t) * TICKS_PER_SEC));
+}
+const tkSecs = (b) => Number(b) / TICKS_PER_SEC;
+const tkFrames = (b) => Number(b) / Number(TPF); // may be fractional
+const roundToFrame = (b) => { const h = TPF / 2n; return (b >= 0n ? (b + h) / TPF : -((-b + h) / TPF)) * TPF; };
 function tc(sec) { // HH:MM:SS:FF (non-drop-frame display)
   const nominal = Math.round(FPS), total = Math.round(sec * FPS);
   const s = Math.floor(total / nominal), p = (n) => String(n).padStart(2, "0");
   return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}:${p(total % nominal)}`;
 }
+const frames = (sec) => Math.round(sec * FPS); // seconds -> whole frames at the sequence frame rate
 function secs(t) {
   if (t == null) return NaN;
   if (typeof t.seconds === "number") return t.seconds;
@@ -212,18 +225,21 @@ async function analyzeEdges(sequence) {
   const base = { edges: [], pieces: [], blocks: [], audioOcc: {}, maxV, maxA };
   if (cutTrack > maxV || vTpl > maxV || aTrack > maxA) return base; // reported by checkSetup
 
-  const spans = [];
-  for (const c of await videoClips(sequence, cutTrack)) spans.push([secs(await c.getStartTime()), secs(await c.getEndTime())]);
+  const spans = []; // [start s, end s, start ticks, end ticks]
+  for (const c of await videoClips(sequence, cutTrack)) {
+    const st = await c.getStartTime(), en = await c.getEndTime();
+    spans.push([secs(st), secs(en), tk(st), tk(en)]);
+  }
   spans.sort((a, b) => a[0] - b[0]);
 
   const blocks = [];
-  for (const [s, e] of spans) {
+  for (const [s, e, sk, ek] of spans) {
     const b = blocks[blocks.length - 1];
-    if (b && s - b.e <= gap) b.e = Math.max(b.e, e);
-    else blocks.push({ s, e });
+    if (b && s - b.e <= gap) { if (e > b.e) { b.e = e; b.ek = ek; } }
+    else blocks.push({ s, e, sk, ek });
   }
   const edges = [];
-  for (const b of blocks) { edges.push({ t: b.s, type: "IN" }); edges.push({ t: b.e, type: "OUT" }); }
+  for (const b of blocks) { edges.push({ t: b.s, tk: b.sk, type: "IN" }); edges.push({ t: b.e, tk: b.ek, type: "OUT" }); }
   edges.sort((a, b) => a.t - b.t);
   edges.forEach((e, i) => (e.idx = i + 1));
 
@@ -231,11 +247,13 @@ async function analyzeEdges(sequence) {
   const pieces = [];
   for (let vn = vTpl; vn <= maxV; vn++) {
     for (const it of await videoClips(sequence, vn)) {
-      pieces.push({ item: it, kind: "V" + vn, s: secs(await it.getStartTime()), e: secs(await it.getEndTime()) });
+      const st = await it.getStartTime(), en = await it.getEndTime();
+      pieces.push({ item: it, kind: "V" + vn, s: secs(st), e: secs(en), sk: tk(st), ek: tk(en) });
     }
   }
   for (const it of await audioClips(sequence, aTrack)) {
-    pieces.push({ item: it, kind: "A" + aTrack, s: secs(await it.getStartTime()), e: secs(await it.getEndTime()) });
+    const st = await it.getStartTime(), en = await it.getEndTime();
+    pieces.push({ item: it, kind: "A" + aTrack, s: secs(st), e: secs(en), sk: tk(st), ek: tk(en) });
   }
   // lanes below the SFX lane: occupancy only (for sliding an SFX down)
   const audioOcc = {};
@@ -243,15 +261,52 @@ async function analyzeEdges(sequence) {
     audioOcc["A" + an] = [];
     for (const it of await audioClips(sequence, an)) audioOcc["A" + an].push([secs(await it.getStartTime()), secs(await it.getEndTime())]);
   }
-  // small tolerance: SFX clips can be as short as 0.23s
-  for (const ed of edges) ed.group = pieces.filter((p) => p.s <= ed.t + 0.02 && p.e >= ed.t - 0.02);
+  // Which pieces belong to which edge's transition?
+  //  1. a piece belongs to the ONE edge it touches that is closest to its middle (so a transition overlapping its neighbor
+  //     isn't claimed by both). Video gets ~3 frames of slack because the editor places the centre by eye;
+  //     whooshes can be as short as 0.23s, so audio keeps a tight tolerance.
+  //  2. transitions built from several clips on one track (e.g. two halves that meet at the cut, where the split IS the
+  //     centre) pull in any clip that touches a clip already in the group, so no half is left behind.
+  for (const ed of edges) ed.group = [];
+  for (const p of pieces) {
+    const tol = p.kind[0] === "V" ? 0.1 : 0.02;
+    const mid = (p.s + p.e) / 2;
+    let owner = null, best = Infinity;
+    for (const ed of edges) {
+      if (p.s <= ed.t + tol && p.e >= ed.t - tol) {
+        const d = Math.abs(mid - ed.t);
+        if (d < best) { best = d; owner = ed; }
+      }
+    }
+    if (owner) owner.group.push(p);
+  }
+  const ADJ = 0.04; // clips this close end-to-start count as touching (just over a frame)
+  const owned = new Set();
+  for (const ed of edges) ed.group.forEach((p) => owned.add(p));
+  for (const ed of edges) {
+    let grew = ed.group.length > 0;
+    while (grew) {
+      grew = false;
+      for (const q of pieces) {
+        if (q.kind[0] !== "V" || owned.has(q)) continue; // never steal a clip another edge already owns
+        if (ed.group.some((p) => p.kind === q.kind && (Math.abs(q.s - p.e) <= ADJ || Math.abs(p.s - q.e) <= ADJ))) { ed.group.push(q); owned.add(q); grew = true; }
+      }
+    }
+  }
   return { edges, pieces, blocks, audioOcc, maxV, maxA };
 }
 
+// "V7 split" = two clips on V7 that meet end-to-start (the two halves of a split transition);
+// "V7 (3 clips)" = several clips that don't touch; a plain "V7" = one clip.
 const groupLabel = (g) => {
-  const kinds = {};
-  for (const p of g) kinds[p.kind] = (kinds[p.kind] || 0) + 1;
-  return Object.entries(kinds).map(([k, v]) => k + (v > 1 ? "x" + v : "")).join(" + ");
+  const byKind = {};
+  for (const p of g) (byKind[p.kind] = byKind[p.kind] || []).push(p);
+  return Object.entries(byKind).map(([k, arr]) => {
+    if (arr.length < 2) return k;
+    arr.sort((x, y) => x.s - y.s);
+    const touching = arr.every((p, i) => i === 0 || Math.abs(p.s - arr[i - 1].e) <= 0.04);
+    return touching ? `${k} split` : `${k} (${arr.length} clips)`;
+  }).join(" + ");
 };
 
 // ---------- setup feedback ----------
@@ -334,15 +389,165 @@ async function buildStyles(A) {
     let s = map.get(sig);
     if (!s) {
       const shown = [...new Set(effects.filter((n) => !/^(Opacity|Motion|Time Remapping)$/.test(n)))].slice(0, 2);
-      s = { sig, rep: e, n: 0, nIn: 0, nOut: 0, label: `${groupLabel(e.group)} · ${shown.join(", ") || "no effects"}` };
+      s = { sig, rep: e, members: [], n: 0, nIn: 0, nOut: 0, label: `${groupLabel(e.group)} · ${shown.join(", ") || "no effects"}` };
       map.set(sig, s);
     }
     s.n++;
+    s.members.push(e);
     if (e.type === "IN") s.nIn++; else s.nOut++;
   }
   const styles = [...map.values()];
   styles.forEach((s) => { s.label += s.n > 1 ? `  ×${s.n}` : ""; });
   return styles;
+}
+
+// ---------- finding the CENTER of a transition ----------
+// Rules (agreed with the editor):
+//  1. SPLIT ("type B"): two clips on a transition track that meet end-to-start. The meeting point is the center.
+//     (Only the transition tracks are looked at, never the footage lane.)
+//  2. otherwise the PEAK KEYFRAME ("type A": one keyframe in, center, out): the keyframe time shared by the most
+//     animated effects, put on the sequence with  clip start + (keyframe time - clip in-point),
+//     then rounded to a whole frame (Premiere places clips on whole frames). The leftover is kept as residualF.
+//  3. otherwise: not found. (The panel then tells the editor to cut the transition in two at its center.)
+// With a split AND keyframes, the two must agree within 1 frame, otherwise there is a warning.
+// The whoosh can't be detected; it is copied at the same offset from the video center.
+async function detectCenter(edge) {
+  const info = { method: "none", t: null, offsetF: null, residualF: 0, warnings: [] };
+  const vs = edge.group.filter((p) => p.kind[0] === "V");
+
+  // peak keyframe, in sequence seconds
+  let peak = null;
+  try {
+    const counts = new Map();
+    for (const p of vs) {
+      let ip = null;
+      try { ip = secs(await p.item.getInPoint()); } catch (e) {}
+      if (ip == null || isNaN(ip)) continue;
+      const chain = await p.item.getComponentChain();
+      const n = chain.getComponentCount();
+      for (let i = 0; i < n; i++) {
+        const comp = chain.getComponentAtIndex(i);
+        const pc = comp.getParamCount();
+        for (let k = 0; k < pc; k++) {
+          const param = comp.getParam(k);
+          let times = [];
+          try { if (param.isTimeVarying && param.isTimeVarying()) times = param.getKeyframeListAsTickTimes(); } catch (e) {}
+          if (!times.length) continue;
+          new Set(times.map((t) => Math.round((p.s + (secs(t) - ip)) * 1000))).forEach((m) => counts.set(m, (counts.get(m) || 0) + 1));
+        }
+      }
+    }
+    let best = null;
+    for (const [m, c] of counts) {
+      if (!best || c > best.c || (c === best.c && Math.abs(m / 1000 - edge.t) < Math.abs(best.m / 1000 - edge.t))) best = { m, c };
+    }
+    if (best) peak = best.m / 1000;
+  } catch (e) { info.warnings.push("could not read the keyframes"); }
+
+  // split points: clips on the same transition track that touch
+  const byTrack = {};
+  for (const p of vs) (byTrack[p.kind] = byTrack[p.kind] || []).push(p);
+  const joints = [];
+  for (const arr of Object.values(byTrack)) {
+    arr.sort((a, b) => a.s - b.s);
+    for (let i = 0; i + 1 < arr.length; i++) if (Math.abs(arr[i + 1].s - arr[i].e) <= 0.04) joints.push({ t: arr[i].e, k: arr[i].ek });
+  }
+
+  if (joints.length) {
+    joints.sort((a, b) => a.t - b.t);
+    const mid = joints[Math.floor(joints.length / 2)];
+    if (joints.some((j) => Math.abs(j.t - mid.t) > 1 / FPS)) info.warnings.push("the clips on different tracks don't split on the same frame");
+    info.method = "split"; info.t = mid.t; info.tk = mid.k; // the split is a clip boundary: an exact tick value
+    if (peak != null) {
+      const d = (peak - mid.t) * FPS;
+      info.residualF = d;
+      if (Math.abs(d) > 1) info.warnings.push(`the split and the keyframes disagree by ${d.toFixed(1)} frames`);
+    }
+  } else if (peak != null) {
+    const pf = peak * FPS;
+    info.method = "keyframe";
+    info.tk = roundToFrame(BigInt(Math.round(peak * TICKS_PER_SEC))); // nearest whole frame, as exact ticks
+    info.t = tkSecs(info.tk);
+    info.residualF = pf - Math.round(pf);
+  } else {
+    info.warnings.push("center not found");
+  }
+  if (info.tk != null && edge.tk != null) info.offsetF = Math.round(tkFrames(info.tk - edge.tk));
+  return info;
+}
+
+// ---------- ALIGNMENT AUDIT ----------
+// Measures instead of trusting. For every transition on the timeline:
+//   - where is its detected center relative to its own cut (should be 0 frames)?
+//   - is every clip of it (video halves, whoosh) at EXACTLY the same offset from its center, in ticks, as the
+//     template of its style? (A stamped copy is a clone shifted by a whole number of frames, so the answer must be 0 ticks.)
+// The track a clip is on is ignored (a copy lifted to a free track is still a correct copy).
+async function auditTransitions(styles) {
+  const out = { total: 0, exact: 0, notFound: [], off: [], worstTicks: 0n, worstCenterF: 0 };
+  const vec = (e, c) => e.group
+    .map((p) => [p.kind[0], p.sk - c.tk, p.ek - c.tk])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)));
+  const absB = (x) => (x < 0n ? -x : x);
+  for (const s of styles) {
+    const cRep = await detectCenter(s.rep);
+    const vRep = cRep.tk != null ? vec(s.rep, cRep) : null;
+    for (const e of s.members) {
+      out.total++;
+      const c = e === s.rep ? cRep : await detectCenter(e);
+      if (c.tk == null || !vRep) { out.notFound.push(`${tc(e.t)} (${e.type})`); continue; }
+      const centerF = Math.round(tkFrames(c.tk - e.tk));
+      const v = vec(e, c);
+      let dev = 0n, same = v.length === vRep.length;
+      if (same) {
+        for (let i = 0; i < v.length; i++) {
+          if (v[i][0] !== vRep[i][0]) { same = false; break; }
+          const d1 = absB(v[i][1] - vRep[i][1]), d2 = absB(v[i][2] - vRep[i][2]);
+          if (d1 > dev) dev = d1;
+          if (d2 > dev) dev = d2;
+        }
+      }
+      if (dev > out.worstTicks) out.worstTicks = dev;
+      if (Math.abs(centerF) > Math.abs(out.worstCenterF)) out.worstCenterF = centerF;
+      if (same && dev === 0n && centerF === 0) out.exact++;
+      else out.off.push(`${tc(e.t)} (${e.type}): center ${relWords(centerF)}${same ? "" : ", different shape from its template"}${dev > 0n ? `, clips off by up to ${dev} ticks (${tkFrames(dev).toFixed(3)} frames)` : ""}`);
+    }
+  }
+  return out;
+}
+function auditLines(a) {
+  const lines = [`Alignment audit: ${a.exact} of ${a.total} transitions are exactly centered on their cut and identical to their template, to the tick.`];
+  if (a.off.length) lines.push(`${a.off.length} differ:`, ...a.off.slice(0, 8).map((x) => "  " + x), ...(a.off.length > 8 ? [`  ...and ${a.off.length - 8} more`] : []));
+  if (a.notFound.length) lines.push(`${a.notFound.length} could not be checked (center not found): ${a.notFound.slice(0, 6).join(", ")}`);
+  return lines;
+}
+async function auditNow() {
+  const { sequence } = await getCtx();
+  if (missingSettings().length) throw new Error("Fill in your tracks first.");
+  const A = await analyzeEdges(sequence);
+  const styles = await buildStyles(A);
+  const a = await auditTransitions(styles);
+  auditLines(a).forEach((l) => log(l));
+  log(`worst clip deviation from a template: ${a.worstTicks} ticks | worst center offset from a cut: ${a.worstCenterF} frames | ticks per frame ${TPF}`);
+  return a;
+}
+
+const relWords = (n) => (n === 0 ? "exactly on the cut" : `${Math.abs(n)} frame${Math.abs(n) === 1 ? "" : "s"} ${n < 0 ? "before" : "after"} the cut`);
+function centerLine(label, s) {
+  if (!s || !s.center) return "";
+  const c = s.center;
+  if (c.method === "split") return `${label}: center found at the split, ${relWords(c.offsetF)}.`;
+  if (c.method === "keyframe") return `${label}: center found from the keyframes, ${relWords(c.offsetF)}.`;
+  return `${label}: center not found. Cut the transition in two at its center with the razor, then refresh.`;
+}
+function updateCenterInfo() {
+  const lines = [centerLine("IN", styleOf("tplIn")), centerLine("OUT", styleOf("tplOut"))];
+  const seen = new Set();
+  for (const id of ["tplIn", "tplOut"]) {
+    const st = styleOf(id);
+    if (st && st.center) for (const w of st.center.warnings) if (w !== "center not found" && !seen.has(w)) { seen.add(w); lines.push("Heads up: " + w + "."); }
+  }
+  if ($("centerOnCut") && !$("centerOnCut").checked) lines.push("Center alignment is off: copies are exact copies of the template.");
+  $("centerInfo").textContent = lines.filter(Boolean).join("\n");
 }
 
 function fillSelect(selId, styles, role) {
@@ -395,6 +600,7 @@ function swapPicks() {
   hideConfirm();
   saveTemplatePicks();
   const swapped = updateSwapTag();
+  updateCenterInfo();
   $("summary").textContent = swapped
     ? "Swapped. Your IN pick is now used at block ends, and your OUT pick at block starts. Nothing on the timeline changed."
     : "Swapped back to the normal order. Nothing on the timeline changed.";
@@ -427,6 +633,8 @@ async function scan(opts = {}) {
     showTab("setup");
     return;
   }
+  // keep the editor's picks (by style, so a swap survives) across the rescan
+  const keepSig = { tplIn: (styleOf("tplIn") || {}).sig, tplOut: (styleOf("tplOut") || {}).sig };
   LAST = await analyzeEdges(sequence);
   const chk = checkSetup(LAST, null, null);
   if (chk.errors.length) {
@@ -437,10 +645,16 @@ async function scan(opts = {}) {
   const { edges, blocks } = LAST;
   const withV = edges.filter(hasVideo);
   LAST.styles = await buildStyles(LAST);
+  for (const st of LAST.styles) st.center = await detectCenter(st.rep);
   fillSelect("tplIn", LAST.styles, "IN");
   fillSelect("tplOut", LAST.styles, "OUT");
+  for (const id of ["tplIn", "tplOut"]) {
+    const s = keepSig[id] ? LAST.styles.find((x) => x.sig === keepSig[id]) : null;
+    if (s) setPick(id, String(s.rep.idx));
+  }
   restoreTemplatePicks();
   updateSwapTag();
+  updateCenterInfo();
   const nIn = edges.filter((e) => e.type === "IN").length;
   const loneWhooshes = edges.filter((e) => e.group.length && !hasVideo(e)).length;
   $("summary").textContent = `Found ${blocks.length} blocks on V${num("cutTrack")}: ${nIn} IN + ${edges.length - nIn} OUT edges. ${withV.length} already have a transition (${LAST.styles.length} style${LAST.styles.length === 1 ? "" : "s"}).`;
@@ -448,6 +662,7 @@ async function scan(opts = {}) {
   if (loneWhooshes) w.push(`${loneWhooshes} edge${loneWhooshes === 1 ? " has" : "s have"} a whoosh on A${num("sfxTrack")} but no adjustment layer. They don't count as transitions.`);
   showWarnings(w);
   setDetails("");
+  if (!opts.quiet) for (const st of LAST.styles) log(`center | ${st.label} | method ${st.center.method}, ${st.center.offsetF == null ? "n/a" : st.center.offsetF + "f from the cut"}, sub-frame residual ${st.center.residualF.toFixed(2)}f${st.center.warnings.length ? " | " + st.center.warnings.join("; ") : ""}`);
   if (!opts.quiet) log(`scan: ${blocks.length} blocks, ${edges.length} edges, ${withV.length} with transitions (${LAST.styles.length} styles), ${loneWhooshes} whoosh-only | tracks ${LAST.maxV}V/${LAST.maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
 }
 
@@ -458,14 +673,51 @@ async function stampEdges(dry) {
   if (miss.length) throw new Error(`Fill in your ${miss.join(", ")} first.`);
   const A = await analyzeEdges(sequence);
   const { edges, pieces, audioOcc, maxV, maxA } = A;
-  const tIn = Number($("tplIn").value) > 0 ? edges[Number($("tplIn").value) - 1] : null;
-  const tOut = Number($("tplOut").value) > 0 ? edges[Number($("tplOut").value) - 1] : null;
+  // Templates are found by their STYLE on the live timeline, not by a remembered edge number: after a stamp and a
+  // Ctrl+Z the edge a dropdown pointed at may be empty again, but the style (and its original) is still there.
+  const stylesNow = await buildStyles(A);
+  const tplFor = (selId) => {
+    const picked = styleOf(selId);
+    if (!picked) return null;
+    const live = stylesNow.find((x) => x.sig === picked.sig);
+    if (!live) throw new Error("The transition you picked is no longer on the timeline. Tap the refresh icon and pick again.");
+    return live.rep;
+  };
+  const tIn = tplFor("tplIn");
+  const tOut = tplFor("tplOut");
   const chk = checkSetup(A, tIn, tOut);
   if (chk.errors.length) throw new Error(chk.errors.join(" "));
   const res = { dry, totalEdges: edges.length, planned: 0, nIn: 0, nOut: 0, hasTransition: 0, beforeZero: 0, noLane: 0, noTemplate: 0, stacked: [], skipped: [], warnings: chk.warnings, ok: null, added: null, expected: null };
   if (!tIn && !tOut) throw new Error("No template transitions found. Build one IN and one OUT by hand, then tap Refresh.");
   log(`${dry ? "preview" : "STAMP"} | IN template @${tIn ? tc(tIn.t) : "none"} | OUT template @${tOut ? tc(tOut.t) : "none"} | tracks ${maxV}V/${maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
   res.warnings.forEach((w) => log("  warning:", w));
+
+  // Where on the template do we measure from? With "center on the cut" ON (default) it is the template's detected CENTER,
+  // so every copy gets its center on its own cut even if the template was a little off. If no center can be found
+  // (or the option is off) it is the template's own cut, i.e. an exact copy. All of this is in exact ticks.
+  const centerOn = $("centerOnCut").checked;
+  const anchors = new Map(); // template edge -> { tk, how }
+  res.centerNotes = [];
+  for (const [label, tpl] of [["IN", tIn], ["OUT", tOut]]) {
+    if (!tpl) continue;
+    const c = await detectCenter(tpl);
+    let how = "exact copy of the template";
+    let anchorTk = tpl.tk;
+    if (centerOn && c.tk != null) {
+      anchorTk = c.tk;
+      how = `center (${c.method === "split" ? "split" : "keyframes"})`;
+      if (c.offsetF !== 0) res.centerNotes.push(`${label} template: its center is ${relWords(c.offsetF)}. Copies are centered on their own cuts.`);
+    } else if (centerOn) {
+      res.centerNotes.push(`${label} template: center not found, so copies are exact copies of it. (Cut the transition in two at its center to fix that.)`);
+    } else if (c.tk != null && c.offsetF !== 0) {
+      res.centerNotes.push(`${label} template: its center is ${relWords(c.offsetF)}, and copies carry the same offset (center alignment is off).`);
+    }
+    c.warnings.filter((w) => w !== "center not found").forEach((w) => res.centerNotes.push(`${label} template: ${w}.`));
+    anchors.set(tpl, { tk: anchorTk, how });
+    log(`  ${label} template anchor: ${how}${c.offsetF != null ? `, ${c.offsetF}f from its cut` : ""}, sub-frame residual ${c.residualF.toFixed(2)}f`);
+  }
+  res.centerNotes.forEach((n) => log("  center:", n));
+  res.offGrid = 0;
 
   // occupancy per lane ("V7", "A3", ...); grows as we plan new stamps
   const occ = {};
@@ -481,7 +733,9 @@ async function stampEdges(dry) {
     if (hasVideo(e)) { res.hasTransition++; continue; } // a lone whoosh is not a transition
     const tpl = e.type === "IN" ? tIn : tOut;
     if (!tpl || !tpl.group.length) { res.noTemplate++; res.skipped.push(`${e.type} @${tc(e.t)}: no template picked`); continue; }
-    const delta = e.t - tpl.t;
+    const deltaTk = e.tk - anchors.get(tpl).tk; // exact whole ticks: new cut minus the template's anchor
+    if (deltaTk % TPF !== 0n) res.offGrid++;
+    const delta = tkSecs(deltaTk);              // seconds, ONLY for the lane-overlap planning below
     const spans = tpl.group.map((p) => ({ p, kind: p.kind, lo: p.s + delta, hi: p.e + delta }));
     if (Math.min(...spans.map((x) => x.lo)) < 0) { res.beforeZero++; res.skipped.push(`${e.type} @${tc(e.t)}: would start before the timeline does`); continue; }
 
@@ -513,7 +767,7 @@ async function stampEdges(dry) {
         ...aSpans.map((x, i) => `${x.kind}->A${laneNum(x.kind) + aShift[i]}`),
       ].join(", "));
     }
-    plan.push({ e, tpl, delta, aSpans, aShift, k });
+    plan.push({ e, tpl, delta, deltaTk, aSpans, aShift, k });
   }
   res.planned = plan.length;
   res.nIn = plan.filter((p) => p.e.type === "IN").length;
@@ -522,6 +776,9 @@ async function stampEdges(dry) {
   log(`to stamp: ${res.planned} (${res.nIn} IN, ${res.nOut} OUT) | already had one: ${res.hasTransition}, before 0s: ${res.beforeZero}, no free track: ${res.noLane}, no template: ${res.noTemplate}`);
   res.stacked.forEach((s) => log("  stacked:", s));
   res.skipped.forEach((s) => log("  skipped:", s));
+  plan.slice(0, 4).forEach((p) => log(`  shift ${p.e.type} @${tc(p.e.t)}: ${Math.round(tkFrames(p.deltaTk))} frames = ${p.deltaTk} ticks`));
+  log(`  all shifts are whole frames: ${res.offGrid === 0 ? "yes" : "NO, " + res.offGrid + " are not"} (ticks per frame ${TPF})`);
+  if (res.offGrid) res.warnings.push(`${res.offGrid} shift(s) don't land on a whole frame. Premiere will round those clips.`);
 
   if (!dry && plan.length) {
     const countBefore = await countLaneClips(sequence, maxV, maxA);
@@ -529,11 +786,12 @@ async function stampEdges(dry) {
     project.lockedAccess(() => {
       try {
         const editor = ppro.SequenceEditor.getEditor(sequence);
-        const zero = ppro.TickTime.createWithSeconds(0);
+        const zero = ppro.TickTime.createWithTicks("0");
         res.ok = project.executeTransaction((compound) => {
           for (const p of plan) {
-            const mag = ppro.TickTime.createWithSeconds(Math.abs(p.delta));
-            const t = p.delta >= 0 ? mag : zero.subtract(mag);
+            // the shift is built from exact integer ticks, not from decimal seconds
+            const mag = ppro.TickTime.createWithTicks(String(p.deltaTk < 0n ? -p.deltaTk : p.deltaTk));
+            const t = p.deltaTk >= 0n ? mag : zero.subtract(mag);
             // args: item, timeOffset, videoTrackVerticalOffset, audioTrackVerticalOffset, alignToVideo, isInsert
             // positive vertical offset = toward higher track numbers (video up, audio down)
             for (const piece of p.tpl.group) {
@@ -550,6 +808,11 @@ async function stampEdges(dry) {
     const countAfter = await countLaneClips(sequence, maxV, maxA);
     res.added = countAfter - countBefore;
     log(`clips on transition lanes: ${countBefore} -> ${countAfter} (added ${res.added}, expected ${res.expected})`);
+    try { // measure what we just did, in exact ticks
+      const A2 = await analyzeEdges(sequence);
+      res.audit = await auditTransitions(await buildStyles(A2));
+      auditLines(res.audit).forEach((l) => log(l));
+    } catch (e) { log("audit failed:", String(e).slice(0, 120)); }
   }
   return res;
 }
@@ -559,9 +822,11 @@ function renderResult(res) {
   if (res.dry) {
     s = res.planned
       ? `Ready to stamp ${res.planned} transitions (${res.nIn} IN, ${res.nOut} OUT).`
-      : (res.hasTransition > 0
-        ? `Nothing to stamp: ${res.hasTransition} of ${res.totalEdges} edges already have a transition. To stamp again, undo (Ctrl+Z) or delete the old ones first.`
-        : "Nothing to stamp.");
+      : (res.noTemplate > 0
+        ? `Nothing to stamp: no IN or OUT transition is picked. Pick one in the dropdowns, or build one by hand and tap the refresh icon.`
+        : res.hasTransition > 0
+          ? `Nothing to stamp: ${res.hasTransition} of ${res.totalEdges} edges already have a transition. To stamp again, undo (Ctrl+Z) or delete the old ones first.`
+          : "Nothing to stamp.");
   } else if (res.ok === false) {
     s = "Stamping FAILED. Nothing may have changed. Check the dev log.";
   } else if (!res.planned) {
@@ -576,11 +841,14 @@ function renderResult(res) {
     if (res.stacked.length) extra.push(`${res.stacked.length} lifted to a free track`);
     if (res.skipped.length) extra.push(`${res.skipped.length} skipped`);
     if (extra.length) s += `\n${extra.join(", ")} (see details).`;
+    if (res.audit) s += `\nChecked: ${res.audit.exact} of ${res.audit.total} transitions are exactly centered and identical to their template, to the tick.`;
   }
   $("summary").textContent = s;
   // setup warnings are about what to fix BEFORE stamping; once it has run, don't leave them hanging
   showWarnings(stamped ? [] : (res.warnings || []));
   const d = [];
+  if (res.centerNotes && res.centerNotes.length) d.push(...res.centerNotes);
+  if (res.audit && (res.audit.off.length || res.audit.notFound.length)) d.push(...auditLines(res.audit));
   if (res.hasTransition) d.push(`${res.hasTransition} edges already had a transition (left alone).`);
   if (res.stacked.length) d.push(`${res.stacked.length} lifted to free tracks:`, ...res.stacked.map((x) => "  " + x));
   if (res.skipped.length) d.push("Skipped:", ...res.skipped.map((x) => "  " + x));
@@ -681,6 +949,114 @@ async function layoutProbe() {
   thin.forEach((t) => log("  " + t));
 }
 
+// dev: for the first few edges that have a transition, where does every nearby piece sit (in frames, relative to the edge)
+// and did it make it into the edge's group? Used to check transitions built from several clips (e.g. two halves meeting at the cut).
+async function nearby() {
+  const { sequence } = await getCtx();
+  if (missingSettings().length) throw new Error("Fill in your tracks first.");
+  const A = await analyzeEdges(sequence);
+  const withV = A.edges.filter(hasVideo).slice(0, 6);
+  log(`nearby: ${withV.length} edges with a video group (up to 6 shown) | fps ${FPS.toFixed(3)}`);
+  for (const e of withV) {
+    log(`edge #${e.idx} ${e.type} @${tc(e.t)} | group: ${groupLabel(e.group)}`);
+    const near = A.pieces.filter((p) => p.s < e.t + 2.5 && p.e > e.t - 2.5).sort((a, b) => a.kind.localeCompare(b.kind) || a.s - b.s);
+    for (const p of near) log(`   ${p.kind}: start ${frames(p.s - e.t)}f, end ${frames(p.e - e.t)}f, len ${frames(p.e - p.s)}f ${e.group.includes(p) ? "(in group)" : "(NOT in group)"}`);
+  }
+}
+
+// dev, READ-ONLY. Phase 1 of the "make the plugin KNOW the center" plan.
+// For each distinct transition style on the timeline it prints, relative to the cut and in frames:
+//   - where every clip starts/ends (so we can see the geometry),
+//   - where clips on one track MEET (a "split": the point where two halves touch),
+//   - the time of every keyframe, read BOTH ways (relative to the clip / absolute in the sequence), because it is not
+//     yet known which one UXP reports; whichever gives sane numbers near the cut tells us,
+//   - any markers we are able to read (sequence markers; and an attempt at the clip's project item).
+// Nothing here changes the timeline.
+async function centerProbe() {
+  const { sequence } = await getCtx();
+  if (missingSettings().length) throw new Error("Fill in your tracks first.");
+  const A = await analyzeEdges(sequence);
+  const styles = await buildStyles(A);
+  log(`center probe | ${styles.length} transition style(s) | fps ${FPS.toFixed(3)} (${FPS_SRC}) | 1 frame = ${(1 / FPS).toFixed(5)}s`);
+
+  const markerInfo = async (owner, label) => {
+    try {
+      const mk = await ppro.Markers.getMarkers(owner);
+      const arr = await mk.getMarkers();
+      const n = arr ? arr.length : 0;
+      let api = "";
+      if (n) api = " | methods: " + Object.getOwnPropertyNames(Object.getPrototypeOf(arr[0])).filter((x) => x !== "constructor").join(",");
+      log(`${label}: ${n} marker(s)${api}`);
+      const out = [];
+      for (const m of (arr || []).slice(0, 60)) {
+        let start = null, name = "";
+        try { start = secs(typeof m.getStart === "function" ? await m.getStart() : m.start); } catch (e) {}
+        try { name = String(typeof m.getName === "function" ? await m.getName() : (m.name || "")); } catch (e) {}
+        out.push({ start, name });
+      }
+      return out;
+    } catch (e) { log(`${label}: could not read markers: ${String(e).slice(0, 120)}`); return []; }
+  };
+  const seqMarkers = await markerInfo(sequence, "sequence markers");
+
+  for (const s of styles) {
+    const e = s.rep;
+    log(`--- style: ${s.label} | sample edge #${e.idx} ${e.type} @${tc(e.t)} (${e.t.toFixed(5)}s)`);
+    const near = seqMarkers.filter((m) => m.start != null && Math.abs(m.start - e.t) < 3);
+    near.forEach((m) => log(`  sequence marker "${m.name}" at ${frames(m.start - e.t)}f from the cut`));
+
+    const byTrack = {};
+    for (const p of e.group) {
+      log(`  ${p.kind}: start ${frames(p.s - e.t)}f (${(p.s - e.t).toFixed(5)}s), end ${frames(p.e - e.t)}f (${(p.e - e.t).toFixed(5)}s), length ${frames(p.e - p.s)}f`);
+      if (p.kind[0] === "V") (byTrack[p.kind] = byTrack[p.kind] || []).push(p);
+    }
+    for (const [kind, arr] of Object.entries(byTrack)) {
+      arr.sort((a, b) => a.s - b.s);
+      for (let i = 0; i + 1 < arr.length; i++) {
+        log(`  ${kind}: two clips meet ${frames(arr[i].e - e.t)}f from the cut (gap between them ${frames(arr[i + 1].s - arr[i].e)}f)  <-- split point`);
+      }
+    }
+
+    for (const p of e.group.filter((x) => x.kind[0] === "V")) {
+      try {
+        // keyframe times are in the clip's SOURCE time. To put one on the sequence timeline:
+        //   sequence time = clip start + (keyframe time - clip in-point)
+        let ip = null;
+        try { ip = secs(await p.item.getInPoint()); } catch (err) {}
+        log(`  ${p.kind} clip at ${frames(p.s - e.t)}f..${frames(p.e - e.t)}f | in-point ${ip == null ? "unreadable" : ip.toFixed(4) + "s"}`);
+        const seqFrames = (x) => (ip == null ? NaN : (((p.s + (x - ip)) - e.t) * FPS));
+        const counts = new Map(); let nParams = 0;
+        const chain = await p.item.getComponentChain();
+        const n = chain.getComponentCount();
+        for (let i = 0; i < n; i++) {
+          const comp = chain.getComponentAtIndex(i);
+          const cname = await comp.getDisplayName();
+          const pc = comp.getParamCount();
+          for (let k = 0; k < pc; k++) {
+            const param = comp.getParam(k);
+            let times = [];
+            try { if (param.isTimeVarying && param.isTimeVarying()) times = param.getKeyframeListAsTickTimes(); } catch (err) {}
+            if (!times.length) continue;
+            const ts = times.map((t) => secs(t));
+            nParams++;
+            new Set(ts.map((x) => Math.round(x * 1000))).forEach((m) => counts.set(m, (counts.get(m) || 0) + 1));
+            log(`     ${cname} / ${param.displayName ?? k}: ${ts.length} keys | on the sequence, frames from the cut: ${ts.map((x) => seqFrames(x).toFixed(2)).join(", ")}`);
+          }
+        }
+        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+        log(`     keyframe times shared by the most effects (the likely "peak"): ` + top.map(([m, c]) => `${(m / 1000).toFixed(3)}s in ${c} of ${nParams} -> ${seqFrames(m / 1000).toFixed(2)}f from the cut`).join(" | "));
+      } catch (err) { log("  keyframe read failed:", String(err).slice(0, 120)); }
+    }
+
+    for (const p of e.group) {
+      try {
+        const pi = await p.item.getProjectItem();
+        await markerInfo(pi, `  ${p.kind} project-item markers`);
+      } catch (err) { log(`  ${p.kind} project-item markers: not readable (${String(err).slice(0, 80)})`); }
+    }
+  }
+}
+
 async function listEdges() {
   const { sequence } = await getCtx();
   if (missingSettings().length) throw new Error("Fill in your tracks first.");
@@ -727,6 +1103,7 @@ $("preview").addEventListener("click", guarded(() => stampEdges(true), renderRes
 $("stamp").addEventListener("click", guarded(async () => {
   hideConfirm();
   if (missingSettings().length) { showTab("setup"); return; } // nothing to stamp with yet: take them to Setup
+  await scan({ quiet: true }); // always plan from the live timeline (after a Ctrl+Z the panel's old data is stale)
   const r = await stampEdges(true);
   renderResult(r);
   if (r.planned) {
@@ -776,6 +1153,9 @@ $("listEdges").addEventListener("click", guarded(listEdges));
 $("inspectTpl").addEventListener("click", guarded(inspectTemplates));
 $("census").addEventListener("click", guarded(census));
 $("layoutProbe").addEventListener("click", guarded(layoutProbe));
+$("nearbyProbe").addEventListener("click", guarded(nearby));
+$("centerProbe").addEventListener("click", guarded(centerProbe));
+$("auditNow").addEventListener("click", guarded(auditNow));
 $("clearLog").addEventListener("click", () => { logEl.value = ""; });
 
 // any change invalidates a pending confirm; optional remembering
@@ -784,9 +1164,11 @@ SETTING_IDS.forEach((id) => $(id).addEventListener("change", () => {
   hideConfirm(); saveSettings(); updateTrackSummary(); updateSetupNote();
   if (!missingSettings().length) guarded(scan)();
 }));
-["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); updateSwapTag(); }));
+["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); updateSwapTag(); updateCenterInfo(); }));
 $("rememberSettings").addEventListener("change", () => { setPref("rememberSettings", $("rememberSettings").checked ? "1" : "0"); saveSettings(); });
 $("rememberTemplates").addEventListener("change", () => { setPref("rememberTemplates", $("rememberTemplates").checked ? "1" : "0"); saveTemplatePicks(); });
+$("centerOnCut").checked = getPref("centerOnCut") !== "0"; // ON by default
+$("centerOnCut").addEventListener("change", () => { setPref("centerOnCut", $("centerOnCut").checked ? "1" : "0"); hideConfirm(); updateCenterInfo(); });
 $("rememberSettings").checked = getPref("rememberSettings") === "1";
 $("rememberTemplates").checked = getPref("rememberTemplates") === "1";
 $("devMode").checked = getPref("devMode") === "1";
@@ -811,6 +1193,11 @@ async function bridgeTick() {
     const action = cmd && cmd.action;
     logEl.value = "";
     if (cmd && cmd.tab) showTab(cmd.tab); // optional: look at a specific tab (dev testing)
+    if (cmd && cmd.settings) { // optional: set the track fields, e.g. {"cutTrack":4,"tplTrack":6,"sfxTrack":3} (panel state only, not the timeline)
+      for (const id of SETTING_IDS) if (cmd.settings[id] != null) $(id).value = String(cmd.settings[id]);
+      updateTrackSummary(); updateSetupNote();
+    }
+    if (cmd && cmd.options && cmd.options.centerOnCut != null) { $("centerOnCut").checked = !!cmd.options.centerOnCut; updateCenterInfo(); } // dev testing
     log(`[bridge] ${id}: ${action}`);
     let status = "ok", error = null;
     busy = true;
@@ -820,6 +1207,9 @@ async function bridgeTick() {
       else if (action === "inspect") await inspectTemplates();
       else if (action === "census") await census();
       else if (action === "layout") await layoutProbe();
+      else if (action === "nearby") await nearby();
+      else if (action === "center") await centerProbe();
+      else if (action === "audit") await auditNow();
       else if (action === "preview") { await scan({ quiet: true }); renderResult(await stampEdges(true)); }
       else if (action === "stamp") {
         if (!$("allowBridgeStamp").checked) { status = "refused"; error = "Bridge stamping is not enabled in the panel."; log("[bridge] REFUSED: tick 'Allow bridge to STAMP' first."); }

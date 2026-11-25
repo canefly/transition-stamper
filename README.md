@@ -6,7 +6,7 @@ You build **one IN** and **one OUT** transition by hand (adjustment layers with 
 
 ## Status
 
-Working in Premiere Pro 27.0 on two real projects (49 and 75 transitions stamped, 30 and 29.97 fps). Not yet packaged for other editors.
+Working in Premiere Pro 27.0 on real projects (up to 75 transitions stamped at once, 30 and 29.97 fps). Installable as a `.ccx` (Premiere 2026 / 26.0 and newer); see [the install guide](docs/install.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Known limitation: stamped transitions aren't linked
 

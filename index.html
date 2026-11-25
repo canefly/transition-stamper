@@ -109,7 +109,8 @@
       <select id="tplIn"></select>
       <span class="lbl" id="outLbl">OUT (end of a block)</span>
       <select id="tplOut"></select>
-      <div class="hint" style="margin-top:0">Stamps came out the wrong way round? Tap &#8644; to swap IN and OUT.</div>
+      <div id="centerInfo" class="hint" style="margin-top:0; white-space:pre-wrap"></div>
+      <div class="hint" style="margin-top:6px">Stamps came out the wrong way round? Tap &#8644; to swap IN and OUT.</div>
       <div class="end"></div>
     </div>
 
@@ -136,7 +137,7 @@
       <div class="frow"><span class="lbl">Footage track (V)</span><input id="cutTrack" type="text" placeholder="1" /></div>
       <div class="frow"><span class="lbl">Transitions start (V)</span><input id="tplTrack" type="text" placeholder="10" /></div>
       <div class="frow"><span class="lbl">Whoosh SFX (A)</span><input id="sfxTrack" type="text" placeholder="8" /></div>
-      <div class="hint">Transitions go above your footage, with empty video tracks above them.</div>
+      <div class="hint">Transitions start at this track. This track and every track above it is searched for transitions, so keep empty tracks above them.</div>
       <div class="end"></div>
     </div>
 
@@ -146,6 +147,7 @@
     <div id="options" style="display:none">
       <div class="card" style="margin-top:8px">
         <div class="frow"><span class="lbl">Block gap (sec)</span><input id="gapTol" type="text" value="0.1" /></div>
+        <label class="check"><input id="centerOnCut" type="checkbox" checked />Line each transition's center up on its cut</label>
         <label class="check"><input id="rememberSettings" type="checkbox" />Remember tracks per project</label>
         <label class="check"><input id="rememberTemplates" type="checkbox" />Remember my picks per project</label>
         <label class="check"><input id="devMode" type="checkbox" />Developer mode</label>
@@ -185,6 +187,9 @@
       <button id="inspectTpl" class="small">Inspect</button>
       <button id="census" class="small">Census</button>
       <button id="layoutProbe" class="small">Layout</button>
+      <button id="nearbyProbe" class="small">Nearby</button>
+      <button id="centerProbe" class="small">Center</button>
+      <button id="auditNow" class="small">Audit</button>
       <button id="clearLog" class="small">Clear</button>
     </div>
     <label class="check"><input id="allowBridgeStamp" type="checkbox" />Allow bridge to STAMP</label>

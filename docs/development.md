@@ -38,7 +38,7 @@ While dev mode is on, the panel checks `cmd.json` in the project folder every 1.
 { "id": "t1", "action": "scan" }
 ```
 
-Actions: `scan`, `listEdges`, `preview`, `inspect`, `census`, `stamp`. Results go to `log.txt` and `bridge-result.json`. `stamp` is refused unless **Allow bridge to STAMP** is ticked in the panel. `cmd.json`, `log.txt` and `bridge-result.json` are git-ignored.
+Actions: `scan`, `listEdges`, `preview`, `inspect`, `census`, `layout`, `nearby`, `center`, `audit`, `stamp`. Optional extra fields in `cmd.json`: `"tab": "about"` (switch the panel to a tab), `"settings": {"cutTrack":4,"tplTrack":6,"sfxTrack":3}` (fill the track fields) and `"options": {"centerOnCut":false}`. These only change panel state, never the timeline. `center` is a read-only probe of every transition style (clip geometry, split points, keyframe times), and `audit` measures every transition against its template in exact ticks. Results go to `log.txt` and `bridge-result.json`. `stamp` is refused unless **Allow bridge to STAMP** is ticked in the panel. `cmd.json`, `log.txt` and `bridge-result.json` are git-ignored.
 
 ## Panel preferences
 
