@@ -25,11 +25,25 @@ Adobe's guidance: set the id before packaging and keep it **stable across update
 
 ## 3. Install it (editor's machine)
 
-1. Double-click the `.ccx`. Creative Cloud Desktop opens.
-2. Review the warning about packages from outside the Marketplace and choose **Install**.
-3. In Premiere: **Window > UXP Plugins > Transition Stamper**.
+1. Double-click the `.ccx`. Adobe's installer agent takes over (the Creative Cloud window may or may not show anything).
+2. If a warning about packages from outside the Marketplace appears, choose **Install**.
+3. Restart Premiere if it was open. Then: **Window > UXP Plugins > Transition Stamper**.
 
-End users do **not** need Premiere's developer mode; that is only for loading unpackaged plugins from UDT. Administrative privileges may be requested. The command-line alternative is the Unified Plugin Installer Agent (`UnifiedPluginInstallerAgent.exe /install <path>` on Windows).
+End users do **not** need Premiere's developer mode; that is only for loading unpackaged plugins from UDT. Administrative privileges may be requested.
+
+### What the install actually does
+
+Double-clicking a `.ccx` is handled by Adobe's **Unified Plugin Installer Agent (UPIA)**, a background component that ships with Creative Cloud, not by the Creative Cloud app window itself. So the install can succeed even when the Creative Cloud app shows nothing about it (a friend's machine did exactly that).
+
+On Windows it unpacks the plugin into `%APPDATA%\Adobe\UXP\Plugins\External\com.stamper.cane_<version>\` and registers it in `%APPDATA%\Adobe\UXP\PluginsInfo\v1\premierepro.json` (status `enabled`, with the plugin's minimum Premiere version). Premiere reads that file at startup. No admin rights were needed on the developer's machine.
+
+To install without opening anything, run the installer agent directly (PowerShell):
+
+```
+& "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install "C:\path\to\com.stamper.cane_premierepro.ccx"
+```
+
+Copying files into the `External` folder by hand is **not** supported: the plugin also has to be registered in `premierepro.json`. The agent only exists on machines with Creative Cloud components installed, which any Premiere installed through Creative Cloud has.
 
 Updating: build a new version with a higher `version`, package it with the same id, and install it over the old one.
 
