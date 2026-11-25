@@ -9,6 +9,19 @@
 - **Timecode:** the sequence frame rate comes from `sequence.getSettings().getVideoFrameRate().value`. It worked at 30 and 29.97 fps. Timecodes in the panel are non-drop-frame display.
 - **Premiere's own dev-mode switch is separate from UDT's.** Both are needed (see [development](development.md)).
 
+## UXP panel UI quirks (learned the hard way)
+
+Things that behave differently from a browser in Premiere's UXP panels:
+
+- **`<input type="number">` shows `nan` when empty and ignores placeholders.** Use `type="text"` and parse the number yourself.
+- **`<button variant="cta">` did not turn blue** in Premiere. The primary action is a styled `<div class="cta">` instead.
+- **`classList.toggle(name, force)` is unreliable.** Use explicit `add` / `remove`. An error in code that runs outside a `try` can also leave the panel stuck "busy", so the busy flag is reset in a `finally`.
+- **Border radius is NOT clamped.** A radius bigger than half the element's height draws bow-tie shapes (a 50px radius on a 32px pill curled inward). Use a radius a little under half the height.
+- **Negative margins and show/hide switching can leave stale pixels or stale click areas** until the window is resized. The panel nudges the body padding by 1px after tab switches and toggles to force a fresh layout (`relayout()` in `index.js`).
+- **Not relied on:** CSS grid, `gap`, native `<details>`. Layout uses flexbox and margins.
+- Hover states (`:hover`) work on divs.
+- Premiere's plugin API has no "add track" command, so the panel tells the editor how many empty video tracks to add.
+
 ## Design decisions
 
 - **Edges, not hard cuts.** First version stamped all 85 hard cuts, which put transitions in the middle of continuous talking-head blocks. The editor's rule is block edges only.

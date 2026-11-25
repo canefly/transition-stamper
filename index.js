@@ -18,7 +18,50 @@ const DEV_DIR = "file:D:/Codes/premiere-stamper"; // dev mode only: log.txt + cm
 const CLIP = (ppro.Constants && ppro.Constants.TrackItemType && (ppro.Constants.TrackItemType.CLIP ?? ppro.Constants.TrackItemType.Clip)) ?? 1;
 const TICKS_PER_SEC = 254016000000;
 const SETTING_IDS = ["cutTrack", "tplTrack", "sfxTrack", "gapTol"];
-const BUTTONS = ["scan", "preview", "stamp", "confirmStamp"];
+const BUTTONS = ["scan", "preview", "stamp", "confirmStamp", "setupDone"];
+
+// UXP's classList may not support toggle(name, force): use explicit add/remove
+function setClass(el, name, on) {
+  if (!el || !el.classList) return;
+  if (on) el.classList.add(name); else el.classList.remove(name);
+}
+
+// show any script error in the panel itself, so a broken load is never silent
+const showFatal = (m) => { try { $("summary").textContent = "Script error: " + m; } catch (e) {} };
+try { window.addEventListener("error", (ev) => showFatal(ev && ev.message ? ev.message : String(ev))); } catch (e) {}
+try { window.addEventListener("unhandledrejection", (ev) => showFatal(String(ev && ev.reason))); } catch (e) {}
+
+// UXP can leave stale pixels / stale click areas after show/hide changes until the window is resized.
+// Reading a layout property and nudging the body padding by 1px after every change forces a fresh layout.
+function relayout() {
+  try {
+    const b = document.body;
+    void b.offsetHeight;
+    b.style.paddingBottom = b.style.paddingBottom === "11px" ? "10px" : "11px";
+  } catch (e) {}
+}
+
+// ---------- tabs ----------
+let activeTab = "stamp";
+function showTab(name) {
+  activeTab = name;
+  for (const t of ["stamp", "setup", "dev"]) {
+    const cap = t[0].toUpperCase() + t.slice(1);
+    setClass($("p" + cap), "active", t === name);
+    setClass($("tab" + cap), "active", t === name);
+  }
+  relayout();
+}
+function updateSetupNote() {
+  const miss = missingSettings();
+  $("setupNote").textContent = miss.length ? `Fill in your ${miss.join(", ")}, then tap Done.` : "";
+}
+function updateTrackSummary() {
+  const c = num("cutTrack"), t = num("tplTrack"), s = num("sfxTrack");
+  $("trackSummary").textContent = (c >= 1 && t >= 1 && s >= 1)
+    ? `Footage V${c} · Transitions V${t}+ · Whoosh A${s}`
+    : "Tracks not set yet";
+}
 
 // ---------- logging (dev log textarea + log.txt) ----------
 const logEl = $("log");
@@ -127,7 +170,8 @@ async function countLaneClips(sequence, maxV, maxA) {
 
 // ---------- analysis ----------
 async function analyzeEdges(sequence) {
-  const cutTrack = num("cutTrack"), vTpl = num("tplTrack"), aTrack = num("sfxTrack"), gap = num("gapTol");
+  const cutTrack = num("cutTrack"), vTpl = num("tplTrack"), aTrack = num("sfxTrack");
+  const gap = num("gapTol") >= 0 ? num("gapTol") : 0.1; // text field: junk or empty falls back to 0.1s
   const maxV = await countTracks(sequence, "video");
   const maxA = await countTracks(sequence, "audio");
   const base = { edges: [], pieces: [], blocks: [], audioOcc: {}, maxV, maxA };
@@ -192,10 +236,18 @@ function checkSetup(A, tIn, tOut) {
   if (!errors.length && !A.blocks.length) errors.push(`Main footage track V${cut} has no clips.`);
   if (!errors.length) {
     if (tpl <= cut) warnings.push(`Transition track V${tpl} is not above main footage V${cut}. An adjustment layer only affects the tracks below it.`);
-    const used = [tIn, tOut].filter(Boolean).flatMap((t) => t.group).filter((p) => p.kind[0] === "V").map((p) => laneNum(p.kind));
+    // Room above the templates only matters if two transitions overlap: the second one is lifted above the first.
+    // That needs as many free tracks as the bigger template has video layers (1 layer: 1 track, 2 layers: 2 tracks).
+    const tpls = [tIn, tOut].filter(Boolean);
+    const vLanes = (t) => new Set(t.group.filter((p) => p.kind[0] === "V").map((p) => p.kind));
+    const used = tpls.flatMap((t) => [...vLanes(t)]).map(laneNum);
     if (used.length) {
       const free = A.maxV - Math.max(...used);
-      if (free < 2) warnings.push(`Only ${free} empty video track(s) above your templates. If two transitions collide, the second needs a free track above, otherwise it is skipped. Add empty tracks at the top.`);
+      const need = Math.max(...tpls.map((t) => vLanes(t).size));
+      if (free < need) {
+        const add = need - free;
+        warnings.push(`No spare video track above your transitions. If two transitions overlap, the second has nowhere to go and gets skipped. Add ${add} empty video track${add > 1 ? "s" : ""} at the top (right-click the track names, then Add Tracks).`);
+      }
     }
     const sfxClips = A.pieces.filter((p) => p.kind === "A" + sfx).length;
     if (A.edges.length && sfxClips > A.edges.length * 1.5) warnings.push(`SFX track A${sfx} already holds ${sfxClips} clips, more than the ${A.edges.length} edges. If it carries other audio, pick an empty track.`);
@@ -203,7 +255,23 @@ function checkSetup(A, tIn, tOut) {
   if (FPS_SRC.startsWith("assumed")) warnings.push("Couldn't read the sequence frame rate; timecodes assume 30 fps.");
   return { errors, warnings };
 }
-function showWarnings(list) { $("warnings").textContent = list.length ? list.map((w) => "Warning: " + w).join("\n") : ""; }
+function showWarnings(list) { $("warnings").textContent = list.length ? list.map((w) => "Heads up: " + w).join("\n") : ""; }
+
+// "Show details" is collapsed by default so the result area stays short
+function setDetails(text) {
+  $("details").textContent = text;
+  $("details").style.display = "none";
+  $("detailsToggle").textContent = "Show details";
+  $("detailsToggle").style.display = text ? "block" : "none";
+}
+function clearResults() {
+  $("summary").textContent = "";
+  showWarnings([]);
+  setDetails("");
+  $("confirmBox").style.display = "none";
+  $("tplIn").innerHTML = "";
+  $("tplOut").innerHTML = "";
+}
 
 // ---------- UI: scan ----------
 function fillSelect(selId, edges, type) {
@@ -235,17 +303,20 @@ let LAST = null; // last analysis
 async function scan(opts = {}) {
   const { sequence } = await getCtx();
   $("confirmBox").style.display = "none";
+  updateTrackSummary();
+  updateSetupNote();
   const miss = missingSettings();
   if (miss.length) {
-    $("summary").textContent = `Fill in your ${miss.join(", ")} under "1. Your tracks", then press Rescan.`;
-    showWarnings([]); $("details").textContent = "";
+    $("summary").textContent = "Set your tracks in the Setup tab first.";
+    showWarnings([]); setDetails("");
+    showTab("setup");
     return;
   }
   LAST = await analyzeEdges(sequence);
   const chk = checkSetup(LAST, null, null);
   if (chk.errors.length) {
     $("summary").textContent = "Problem: " + chk.errors.join(" ");
-    showWarnings(chk.warnings); $("details").textContent = "";
+    showWarnings(chk.warnings); setDetails("");
     return;
   }
   const { edges, blocks } = LAST;
@@ -256,7 +327,7 @@ async function scan(opts = {}) {
   const nIn = edges.filter((e) => e.type === "IN").length;
   $("summary").textContent = `Found ${blocks.length} blocks on V${num("cutTrack")}: ${nIn} IN + ${edges.length - nIn} OUT edges. ${withG.length} already have a transition.`;
   showWarnings(chk.warnings);
-  $("details").textContent = "";
+  setDetails("");
   if (!opts.quiet) log(`scan: ${blocks.length} blocks, ${edges.length} edges, ${withG.length} with transitions | tracks ${LAST.maxV}V/${LAST.maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
 }
 
@@ -272,7 +343,7 @@ async function stampEdges(dry) {
   const chk = checkSetup(A, tIn, tOut);
   if (chk.errors.length) throw new Error(chk.errors.join(" "));
   const res = { dry, planned: 0, nIn: 0, nOut: 0, hasTransition: 0, beforeZero: 0, noLane: 0, noTemplate: 0, stacked: [], skipped: [], warnings: chk.warnings, ok: null, added: null, expected: null };
-  if (!tIn && !tOut) throw new Error("No template transitions found. Build one IN and one OUT by hand, then press Rescan.");
+  if (!tIn && !tOut) throw new Error("No template transitions found. Build one IN and one OUT by hand, then tap Refresh.");
   log(`${dry ? "preview" : "STAMP"} | IN template @${tIn ? tc(tIn.t) : "none"} | OUT template @${tOut ? tc(tOut.t) : "none"} | tracks ${maxV}V/${maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
   res.warnings.forEach((w) => log("  warning:", w));
 
@@ -375,13 +446,21 @@ function renderResult(res) {
     s = `Stamped ${res.planned} transitions (${res.nIn} IN, ${res.nOut} OUT). Ctrl+Z undoes all of it.`;
     if (res.added !== res.expected) s += `\nWarning: expected ${res.expected} new clips, found ${res.added}.`;
   }
+  const stamped = !res.dry && res.ok !== false && res.planned > 0;
+  if (stamped) {
+    const extra = [];
+    if (res.stacked.length) extra.push(`${res.stacked.length} lifted to a free track`);
+    if (res.skipped.length) extra.push(`${res.skipped.length} skipped`);
+    if (extra.length) s += `\n${extra.join(", ")} (see details).`;
+  }
   $("summary").textContent = s;
-  showWarnings(res.warnings || []);
+  // setup warnings are about what to fix BEFORE stamping; once it has run, don't leave them hanging
+  showWarnings(stamped ? [] : (res.warnings || []));
   const d = [];
   if (res.hasTransition) d.push(`${res.hasTransition} edges already had a transition (left alone).`);
-  if (res.stacked.length) d.push(`${res.stacked.length} moved to free tracks:`, ...res.stacked.map((x) => "  " + x));
+  if (res.stacked.length) d.push(`${res.stacked.length} lifted to free tracks:`, ...res.stacked.map((x) => "  " + x));
   if (res.skipped.length) d.push("Skipped:", ...res.skipped.map((x) => "  " + x));
-  $("details").textContent = d.join("\n");
+  setDetails(d.join("\n"));
 }
 
 // ---------- dev: inspect / census / edges ----------
@@ -450,6 +529,29 @@ async function census() {
     log(d.n ? `A${a}: ${d.n} clips | ${d.blocks} blocks | ${d.covered.toFixed(0)}s` : `A${a}: empty`);
   }
 }
+// dev: where is everything, and is any element a thin wide sliver (a stray line)?
+async function layoutProbe() {
+  log("layout probe | active tab:", activeTab);
+  const ids = ["pStamp", "pSetup", "pDev", "scan", "stamp", "tplIn", "tplOut", "confirmBox", "summary", "warnings", "detailsToggle", "details", "options"];
+  for (const id of ids) {
+    try {
+      const el = $(id), r = el.getBoundingClientRect();
+      log(`  #${id}: x${Math.round(r.left)} y${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)} display:${el.style.display || "css"}`);
+    } catch (e) {}
+  }
+  const thin = [];
+  for (const el of document.querySelectorAll("*")) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width > 100 && r.height > 0 && r.height <= 4) {
+        thin.push(`${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}${el.className ? "." + String(el.className).replace(/\s+/g, ".") : ""} y${Math.round(r.top)} h${r.height.toFixed(1)}`);
+      }
+    } catch (e) {}
+  }
+  log("thin elements (<=4px tall, >100px wide):", thin.length ? thin.length : "none");
+  thin.forEach((t) => log("  " + t));
+}
+
 async function listEdges() {
   const { sequence } = await getCtx();
   if (missingSettings().length) throw new Error("Fill in your tracks first.");
@@ -460,33 +562,50 @@ async function listEdges() {
 
 // ---------- button wiring ----------
 let busy = false;
-const setButtons = (disabled) => BUTTONS.forEach((id) => ($(id).disabled = disabled));
+const setButtons = (disabled) => BUTTONS.forEach((id) => {
+  try {
+    $(id).disabled = disabled;
+    setClass($(id), "off", disabled); // styled blocks have no native disabled look
+  } catch (e) {}
+});
 function guarded(fn, onDone) {
   return async () => {
     if (busy) return;
     busy = true;
-    setButtons(true);
-    try { const r = await fn(); if (onDone) onDone(r); }
-    catch (e) {
-      $("summary").textContent = "Error: " + (e && e.message ? e.message : String(e));
+    try {
+      setButtons(true);
+      const r = await fn();
+      if (onDone) onDone(r);
+    } catch (e) {
+      try { $("summary").textContent = "Error: " + (e && e.message ? e.message : String(e)); } catch (e2) {}
       log("ERROR:", String(e), e && e.stack ? e.stack : "");
+    } finally {
+      busy = false; // never leave the panel stuck busy
+      setButtons(false);
+      relayout();
     }
-    busy = false;
-    setButtons(false);
-    if ($("devMode").checked) await saveLog();
+    try { if ($("devMode").checked) await saveLog(); } catch (e) {}
   };
 }
-const hideConfirm = () => { $("confirmBox").style.display = "none"; };
+const hideConfirm = () => { $("confirmBox").style.display = "none"; relayout(); };
 
 $("scan").addEventListener("click", guarded(scan));
 $("preview").addEventListener("click", guarded(() => stampEdges(true), renderResult));
 // Stamp = preview first, then ask. Nothing is written until the editor confirms.
+// Warnings never block, but they are shown INSIDE the confirm box, right where the editor decides,
+// and the button then says "Stamp anyway". (Errors, like a missing track, do block.)
 $("stamp").addEventListener("click", guarded(async () => {
   hideConfirm();
   const r = await stampEdges(true);
   renderResult(r);
   if (r.planned) {
-    $("confirmText").textContent = `Stamp ${r.planned} transitions (${r.nIn} IN, ${r.nOut} OUT)?${r.warnings.length ? " Check the warnings above first." : ""} Ctrl+Z undoes all of it in one step.`;
+    const w = r.warnings || [];
+    $("summary").textContent = "";
+    showWarnings([]);
+    $("confirmText").textContent = `Stamp ${r.planned} transitions (${r.nIn} IN, ${r.nOut} OUT)? Ctrl+Z undoes all of it in one step.`;
+    $("confirmWarn").textContent = w.map((x) => "Heads up: " + x).join("\n");
+    $("confirmWarn").style.display = w.length ? "block" : "none";
+    $("confirmStamp").textContent = w.length ? "Stamp anyway" : "Yes, stamp";
     $("confirmBox").style.display = "block";
   }
 }));
@@ -497,13 +616,40 @@ $("confirmStamp").addEventListener("click", guarded(async () => {
   renderResult(r);
 }));
 $("cancelStamp").addEventListener("click", hideConfirm);
+// tabs
+$("tabStamp").addEventListener("click", () => showTab("stamp"));
+$("tabSetup").addEventListener("click", () => showTab("setup"));
+$("tabDev").addEventListener("click", () => showTab("dev"));
+$("changeTracks").addEventListener("click", () => showTab("setup"));
+$("optToggle").addEventListener("click", () => {
+  const open = $("options").style.display === "none";
+  $("options").style.display = open ? "block" : "none";
+  $("optToggle").textContent = open ? "Hide options" : "Show options";
+  relayout();
+});
+$("detailsToggle").addEventListener("click", () => {
+  const open = $("details").style.display === "none";
+  $("details").style.display = open ? "block" : "none";
+  $("detailsToggle").textContent = open ? "Hide details" : "Show details";
+  relayout();
+});
+$("setupDone").addEventListener("click", guarded(async () => {
+  saveSettings();
+  showTab("stamp");
+  await scan();
+}));
 $("listEdges").addEventListener("click", guarded(listEdges));
 $("inspectTpl").addEventListener("click", guarded(inspectTemplates));
 $("census").addEventListener("click", guarded(census));
+$("layoutProbe").addEventListener("click", guarded(layoutProbe));
 $("clearLog").addEventListener("click", () => { logEl.value = ""; });
 
 // any change invalidates a pending confirm; optional remembering
-SETTING_IDS.forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveSettings(); }));
+// editing a track applies right away: no "save" button to hunt for
+SETTING_IDS.forEach((id) => $(id).addEventListener("change", () => {
+  hideConfirm(); saveSettings(); updateTrackSummary(); updateSetupNote();
+  if (!missingSettings().length) guarded(scan)();
+}));
 ["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); }));
 $("rememberSettings").addEventListener("change", () => { setPref("rememberSettings", $("rememberSettings").checked ? "1" : "0"); saveSettings(); });
 $("rememberTemplates").addEventListener("change", () => { setPref("rememberTemplates", $("rememberTemplates").checked ? "1" : "0"); saveTemplatePicks(); });
@@ -538,6 +684,7 @@ async function bridgeTick() {
       else if (action === "listEdges") await listEdges();
       else if (action === "inspect") await inspectTemplates();
       else if (action === "census") await census();
+      else if (action === "layout") await layoutProbe();
       else if (action === "preview") { await scan({ quiet: true }); renderResult(await stampEdges(true)); }
       else if (action === "stamp") {
         if (!$("allowBridgeStamp").checked) { status = "refused"; error = "Bridge stamping is not enabled in the panel."; log("[bridge] REFUSED: tick 'Allow bridge to STAMP' first."); }
@@ -553,7 +700,8 @@ async function bridgeTick() {
 }
 function applyDevMode() {
   const on = $("devMode").checked;
-  $("dev").style.display = on ? "block" : "none";
+  $("tabDev").style.display = on ? "block" : "none";
+  if (!on && activeTab === "dev") showTab("stamp");
   setPref("devMode", on ? "1" : "0");
   if (bridgeTimer) { clearInterval(bridgeTimer); bridgeTimer = null; }
   if (on) { bridgeTimer = setInterval(bridgeTick, 1500); $("bridgeStatus").textContent = "bridge: listening for cmd.json every 1.5s"; }
@@ -561,6 +709,25 @@ function applyDevMode() {
 }
 $("devMode").addEventListener("change", applyDevMode);
 applyDevMode();
+
+// ---------- follow the active project / sequence ----------
+// Switching projects or timelines used to leave the old dropdowns and results on screen.
+let activeSig = null;
+async function watchActive() {
+  if (busy || bridgeBusy) return;
+  try {
+    const project = await ppro.Project.getActiveProject();
+    const seq = project ? await project.getActiveSequence() : null;
+    const sig = project && seq ? projectKey(project) + "|" + String(seq.name) : "none";
+    if (activeSig === null) { activeSig = sig; return; } // first tick: just remember where we are
+    if (sig === activeSig) return;
+    activeSig = sig;
+    clearResults();
+    LAST = null;
+    await guarded(scan)();
+  } catch (e) {}
+}
+setInterval(watchActive, 2000);
 
 // first scan on load
 guarded(scan)();
