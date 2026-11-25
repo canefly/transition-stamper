@@ -33,6 +33,8 @@ End users do **not** need Premiere's developer mode; that is only for loading un
 
 ### What the install actually does
 
+(An editor-facing version of these steps, including the command-line option, is in [install.md](install.md).)
+
 Double-clicking a `.ccx` is handled by Adobe's **Unified Plugin Installer Agent (UPIA)**, a background component that ships with Creative Cloud, not by the Creative Cloud app window itself. So the install can succeed even when the Creative Cloud app shows nothing about it (a friend's machine did exactly that).
 
 On Windows it unpacks the plugin into `%APPDATA%\Adobe\UXP\Plugins\External\com.stamper.cane_<version>\` and registers it in `%APPDATA%\Adobe\UXP\PluginsInfo\v1\premierepro.json` (status `enabled`, with the plugin's minimum Premiere version). Premiere reads that file at startup. No admin rights were needed on the developer's machine.

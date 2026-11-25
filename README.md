@@ -26,6 +26,7 @@ Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Docs
 
+- [Installing it (for editors)](docs/install.md)
 - [What it does and why](docs/overview.md)
 - [Tech stack](docs/tech-stack.md)
 - [Development workflow](docs/development.md)
