@@ -26,4 +26,5 @@ Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 - [Tech stack](docs/tech-stack.md)
 - [Development workflow](docs/development.md)
 - [Decisions, findings and known limits](docs/decisions.md)
+- [Building and sharing a release (.ccx)](docs/release.md)
 - [Original handoff notes](CONTEXT.md) (how the project started)
