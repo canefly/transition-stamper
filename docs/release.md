@@ -52,6 +52,7 @@ Updating: build a new version with a higher `version`, package it with the same 
 ## Verified
 
 - **Install on a second machine** (a friend's): the `.ccx` went through Creative Cloud Desktop and installed (2026-11-25).
+- **Uninstall and command-line reinstall** (developer's machine, 2026-11-25): uninstalling from the Creative Cloud app removed the plugin folder and its `premierepro.json` entry; then `UnifiedPluginInstallerAgent.exe /install` printed `Installation Successful`, the Creative Cloud app listed the plugin as installed (version 0.1.0), and the panel loaded in Premiere.
 
 ## Not yet verified
 

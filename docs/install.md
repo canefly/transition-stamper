@@ -29,8 +29,8 @@ Use this if double-clicking does nothing, Creative Cloud errors out or hangs, or
    & "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install "C:\Users\YourName\Desktop\com.stamper.cane_premierepro.ccx"
    ```
 
-6. Press **Enter**. It may print nothing, or a short message. The real check is the next step.
-7. Open Premiere, then **Window > UXP Plugins > Transition Stamper**.
+6. Press **Enter**. You should see two lines: `Installing extension with file path = ...` and then `Installation Successful for extension with file path = ...`. If you don't see "Installation Successful", something went wrong: see the list below.
+7. Open Premiere, then **Window > UXP Plugins > Transition Stamper**. The Creative Cloud app will also list it afterwards (under its plugins page, as "Transition Stamper, Installed").
 
 **Mac:** Adobe's documentation gives the command as `./UnifiedPluginInstallerAgent --install <path to the .ccx>`, run from the folder that contains the installer agent. We have not tested this on a Mac and haven't confirmed where the agent lives there, so treat this as a starting point.
 
