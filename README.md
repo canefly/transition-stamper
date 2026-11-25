@@ -16,6 +16,10 @@ Working in Premiere Pro 27.0 on two real projects (49 and 75 transitions stamped
 4. Premiere: **Window > UXP Plugins > Transition Stamper**.
 5. Fill in your three tracks, pick your IN and OUT, **Rescan**, **Stamp all edges**, confirm.
 
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 ## Docs
 
 - [What it does and why](docs/overview.md)
