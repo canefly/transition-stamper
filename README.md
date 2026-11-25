@@ -8,6 +8,10 @@ You build **one IN** and **one OUT** transition by hand (adjustment layers with 
 
 Working in Premiere Pro 27.0 on two real projects (49 and 75 transitions stamped, 30 and 29.97 fps). Not yet packaged for other editors.
 
+### Known limitation: stamped transitions aren't linked
+
+Hand-built transitions often have the whoosh linked to the adjustment layer so they move together. Stamped copies come out as separate, **unlinked** clips, because Premiere's plugin API has no way to link clips. The timing is right; to move one transition as a unit, marquee-select across its tracks (or press Ctrl+L on its clips). Details in [docs/decisions.md](docs/decisions.md).
+
 ## Quick start (development)
 
 1. Premiere Pro 27.0: **Settings > Plugins > Enable developer mode**, then restart Premiere.

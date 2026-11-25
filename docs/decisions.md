@@ -34,6 +34,7 @@ Things that behave differently from a browser in Premiere's UXP panels:
 
 ## Known limits and open questions
 
+- **Stamped transitions are not linked.** A hand-built transition usually has its whoosh linked to the adjustment layer (and layers to each other), so nudging one moves the rest. Stamped copies are cloned piece by piece and come out **unlinked**: nudge the adjustment layer and the whoosh stays behind. Premiere's UXP API (checked through 27.0 docs and changelog) has no call to link, unlink or group clips, and `createCloneTrackItemAction` does not carry links over. Linking exists only in the legacy ExtendScript API (`Sequence.linkSelection()` and friends), which a UXP plugin cannot call. Editors can marquee-select across the tracks to move a whole transition, or press Ctrl+L on a transition's clips. Revisit if Adobe adds linking to UXP, or if a companion CEP/ExtendScript piece is ever accepted (it would reverse the UXP-only decision).
 - The edge at 0 s is skipped.
 - One IN and one OUT template per run.
 - The "has a transition" check treats any clip on the transition tracks or SFX lane that touches an edge as a transition. An SFX lane that carries other audio (for example a video clip's linked audio) pollutes the groups. The panel warns when the lane holds far more clips than edges.
