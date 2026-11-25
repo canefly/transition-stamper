@@ -8,6 +8,14 @@ You build **one IN** and **one OUT** transition by hand (adjustment layers with 
 
 Working in Premiere Pro 27.0 on real projects (up to 75 transitions stamped at once, 30 and 29.97 fps). Installable as a `.ccx` (Premiere 2026 / 26.0 and newer); see [the install guide](docs/install.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
 
+## How to use it
+
+1. Install the `.ccx` ([install guide](docs/install.md)) and open **Window > UXP Plugins > Transition Stamper**.
+2. **Setup:** enter your footage track, the track your transitions start on, and your whoosh audio track.
+3. **Stamp:** pick your IN and OUT transitions (⇄ swaps them), tap **Stamp**, confirm. Ctrl+Z undoes it all.
+
+Full walkthrough, what gets stamped and troubleshooting: [docs/usage.md](docs/usage.md). Purpose and design: [docs/overview.md](docs/overview.md).
+
 ### Known limitation: stamped transitions aren't linked
 
 Hand-built transitions often have the whoosh linked to the adjustment layer so they move together. Stamped copies come out as separate, **unlinked** clips, because Premiere's plugin API has no way to link clips. The timing is right; to move one transition as a unit, marquee-select across its tracks (or press Ctrl+L on its clips). Details in [docs/decisions.md](docs/decisions.md).
@@ -26,6 +34,7 @@ Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Docs
 
+- [How to use it (for editors)](docs/usage.md)
 - [Installing it (for editors)](docs/install.md)
 - [What it does and why](docs/overview.md)
 - [Tech stack](docs/tech-stack.md)
