@@ -12,7 +12,7 @@ This writes `dist/transition-stamper/` (git-ignored) containing only `manifest.j
 | --- | --- | --- |
 | plugin id | `com.stamper.transitionspike` | `com.stamper.cane` |
 | version | `0.0.1` | `0.1.0` |
-| `host.minVersion` | `25.6.0` | `26.0.0` (Premiere 2026; fully tested on 27.0 only) |
+| `host.minVersion` | `25.6.0` | `26.0.0` (Premiere 2026; tested by the author on 27.0 and on Premiere 2026) |
 | permissions | clipboard + file access (dev log/bridge) | none |
 
 Adobe's guidance: set the id before packaging and keep it **stable across updates**. Changing it later makes installs look like a different plugin. Edit the constants at the top of the script to change the id, version or minimum Premiere version.
@@ -36,5 +36,5 @@ Updating: build a new version with a higher `version`, package it with the same 
 ## Not yet verified
 
 - Install on a machine other than the developer's.
-- Behaviour on Premiere 2026 (26.x), the release minimum. Only 27.0 has been run so far.
+- Exact Premiere 2026 build numbers it has been tried on (the author reports it works on 2026; the build wasn't recorded), and anything older than 26.0.
 - Whether Creative Cloud Desktop's "outside Marketplace" warning needs anything beyond clicking Install.

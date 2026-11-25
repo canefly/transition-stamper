@@ -33,9 +33,9 @@ Node.js is used only for `node --check index.js` (a syntax check). There is no a
 
 ## Version caveat
 
-**Tested only on Premiere 27.0.** `manifest.json` declares `minVersion 25.6.0`, which is when UXP plugins became available and when every API this plugin relies on appeared (`createCloneTrackItemAction`, `lockedAccess`, `executeTransaction`, track getters, `TickTime`). It deliberately avoids the 27.0-only calls (it formats timecode itself instead of using `TickTime.timeToTimecode`), and reads the frame rate with `getSettings().getVideoFrameRate()` (26.2+) falling back to `getTimebase()` (25.6+).
+**Developed on Premiere 27.0; also tried on Premiere 2026.** `manifest.json` declares `minVersion 25.6.0`, which is when UXP plugins became available and when every API this plugin relies on appeared (`createCloneTrackItemAction`, `lockedAccess`, `executeTransaction`, track getters, `TickTime`). It deliberately avoids the 27.0-only calls (it formats timecode itself instead of using `TickTime.timeToTimecode`), and reads the frame rate with `getSettings().getVideoFrameRate()` (26.2+) falling back to `getTimebase()` (25.6+).
 
-The **release build** sets the minimum to Premiere 2026 (26.0.0). That makes 26.x plausible, but unproven: it has never been run there, and UXP's UI behaviour (see the quirks in [decisions](decisions.md)) may differ between UXP versions. Separately, a *project* saved in 27.0 won't open in 26.x, which matters for sharing templates. Until it's tested on an older build, treat 27.0 as the supported version.
+The **release build** sets the minimum to Premiere 2026 (26.0.0). It has been run on 27.0 (all development and testing) and the author has also tried it on Premiere 2026 (26.x) and reports it works, but the exact 26.x build wasn't recorded and nothing older than 26.0 has been tried. UXP's UI behaviour (see the quirks in [decisions](decisions.md)) may differ between UXP versions. Separately, a *project* saved in 27.0 won't open in 26.x, which matters for sharing templates. Supported: 27.0 and 2026 (26.x); older versions untested.
 
 ## Files
 
