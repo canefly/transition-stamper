@@ -35,7 +35,7 @@ Node.js is used only for `node --check index.js` (a syntax check). There is no a
 
 **Tested only on Premiere 27.0.** `manifest.json` declares `minVersion 25.6.0`, which is when UXP plugins became available and when every API this plugin relies on appeared (`createCloneTrackItemAction`, `lockedAccess`, `executeTransaction`, track getters, `TickTime`). It deliberately avoids the 27.0-only calls (it formats timecode itself instead of using `TickTime.timeToTimecode`), and reads the frame rate with `getSettings().getVideoFrameRate()` (26.2+) falling back to `getTimebase()` (25.6+).
 
-That makes 25.6 to 26.x plausible, but unproven: it has never been run there, and UXP's UI behaviour (see the quirks in [decisions](decisions.md)) may differ between UXP versions. Separately, a *project* saved in 27.0 won't open in 26.x, which matters for sharing templates. Until it's tested on an older build, treat 27.0 as the supported version.
+The **release build** sets the minimum to Premiere 2026 (26.0.0). That makes 26.x plausible, but unproven: it has never been run there, and UXP's UI behaviour (see the quirks in [decisions](decisions.md)) may differ between UXP versions. Separately, a *project* saved in 27.0 won't open in 26.x, which matters for sharing templates. Until it's tested on an older build, treat 27.0 as the supported version.
 
 ## Files
 

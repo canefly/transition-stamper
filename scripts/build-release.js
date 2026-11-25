@@ -4,7 +4,7 @@
 // What differs from the dev copy (manifest.json in the repo root):
 //   - a separate, stable plugin id, so it never collides with the dev copy loaded from UDT
 //   - a real version number
-//   - host.minVersion set to what we have actually tested
+//   - host.minVersion set to the oldest Premiere we are willing to support (see OPTIONS below)
 //   - NO requiredPermissions: dev mode's file access (log.txt / cmd.json) is not shipped.
 //     index.js already catches that failure silently, so the panel just works without it.
 // Only manifest.json, index.html and index.js are copied. Docs, scripts and git stuff stay out.
@@ -15,7 +15,7 @@ const path = require("path");
 const OPTIONS = {
   id: "com.stamper.cane",   // keep this stable across updates; Adobe: set it before packaging
   version: "0.1.0",         // major.minor.patch
-  minVersion: "27.0.0",     // only 27.0 has been tested; widen once an older Premiere has been tried
+  minVersion: "26.0.0",     // Premiere 2026. Fully tested on 27.0 only; 26.x still needs a real test
 };
 
 const root = path.join(__dirname, "..");
