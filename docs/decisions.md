@@ -18,6 +18,9 @@ Things that behave differently from a browser in Premiere's UXP panels:
 - **`classList.toggle(name, force)` is unreliable.** Use explicit `add` / `remove`. An error in code that runs outside a `try` can also leave the panel stuck "busy", so the busy flag is reset in a `finally`.
 - **Border radius is NOT clamped.** A radius bigger than half the element's height draws bow-tie shapes (a 50px radius on a 32px pill curled inward). Use a radius a little under half the height.
 - **Negative margins and show/hide switching can leave stale pixels or stale click areas** until the window is resized. The panel nudges the body padding by 1px after tab switches and toggles to force a fresh layout (`relayout()` in `index.js`).
+- **There is no `window.innerHeight` / `innerWidth`** (both `undefined`), and `document.documentElement.clientHeight` is **not** the viewport: it is the larger of the viewport and the page's content. Sizing a box from it feeds back on itself (the box grew to thousands of pixels). To make a region fill the panel and scroll, use CSS instead: `html, body { height: 100% }`, `body { display: flex; flex-direction: column; box-sizing: border-box }`, and the scroller as `flex: 1; min-height: 0; overflow-y: auto`. JS only toggles `overflow-y` and resets `scrollTop` when the content fits.
+- **No resize event for a dragged panel**, so anything that must react to size is either pure CSS (preferred) or re-checked on a short timer.
+- **`overflow-y: auto` draws a heavy scrollbar and leaves `scrollTop` where it was** even when the content then fits. Switch it to `hidden` and reset `scrollTop` to 0 when nothing overflows.
 - **Not relied on:** CSS grid, `gap`, native `<details>`. Layout uses flexbox and margins.
 - Hover states (`:hover`) work on divs.
 - Premiere's plugin API has no "add track" command, so the panel tells the editor how many empty video tracks to add.
@@ -30,7 +33,9 @@ Things that behave differently from a browser in Premiere's UXP panels:
 - **No baked-in track numbers.** The panel asks for them; remembering is optional, per project. Editors lay out timelines differently.
 - **Preview, then confirm, then write.** Plus warnings for setups that look wrong.
 - **Stack, don't skip, on collisions** (video up as a group, audio down), and skip with an explicit reason when nothing is free.
-- **Templates must be on the timeline.** They are discovered by scanning for clips touching an edge on the transition tracks. The IN/OUT dropdowns list every edge that has a group, including ones the plugin stamped earlier.
+- **Templates must be on the timeline, and a transition needs a video layer.** They are discovered by scanning for clips touching an edge on the transition tracks. An edge only counts as having a transition if its group contains at least one video clip: a lone whoosh is not a transition (an early version counted it, so "Nothing to stamp" appeared on a timeline full of leftover whooshes).
+- **The IN/OUT dropdowns list styles, not copies.** Transitions are grouped into distinct styles (same tracks, same timing around the edge, same effects), each shown once with a count (for example `V7 + A3 · Blur, Lumetri  x24`). Listing every stamped copy produced a 48-row dropdown. Both dropdowns list the same styles so the swap button can exchange the two picks.
+- **Swap exchanges roles, not the timeline.** The swap button exchanges which style is used at block starts and which at block ends. When the picks are the exchanged versions of the defaults, both labels show a swapped tag.
 
 ## Known limits and open questions
 

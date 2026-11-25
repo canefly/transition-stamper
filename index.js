@@ -39,13 +39,34 @@ function relayout() {
     void b.offsetHeight;
     b.style.paddingBottom = b.style.paddingBottom === "11px" ? "10px" : "11px";
   } catch (e) {}
+  fitScroller();
 }
+
+// The scrolling box is sized by CSS (a flex column that fills the panel). All JS does is switch scrolling
+// on only when the content really overflows, and go back to the top when it fits.
+// Do NOT size it from document.documentElement.clientHeight: in UXP that is max(viewport, content),
+// so setting the height from it feeds back on itself and the box grows without limit.
+function fitScroller() {
+  try {
+    const s = $("scroller");
+    if (s.style.height) s.style.height = ""; // clear any fixed height
+    const needs = s.scrollHeight > s.clientHeight + 1;
+    const want = needs ? "auto" : "hidden";
+    if (s.style.overflowY !== want) s.style.overflowY = want;
+    if (!needs && s.scrollTop !== 0) s.scrollTop = 0;
+    const pad = needs ? "6px" : "0px";
+    if (s.style.paddingRight !== pad) s.style.paddingRight = pad;
+  } catch (e) {}
+}
+// UXP may not fire a resize event when a panel is dragged, so re-check a few times a second
+try { window.addEventListener("resize", fitScroller); } catch (e) {}
+setInterval(fitScroller, 400);
 
 // ---------- tabs ----------
 let activeTab = "stamp";
 function showTab(name) {
   activeTab = name;
-  for (const t of ["stamp", "setup", "dev"]) {
+  for (const t of ["stamp", "setup", "about", "dev"]) {
     const cap = t[0].toUpperCase() + t.slice(1);
     setClass($("p" + cap), "active", t === name);
     setClass($("tab" + cap), "active", t === name);
@@ -61,6 +82,18 @@ function updateTrackSummary() {
   $("trackSummary").textContent = (c >= 1 && t >= 1 && s >= 1)
     ? `Footage V${c} · Transitions V${t}+ · Whoosh A${s}`
     : "Tracks not set yet";
+  applySetupState();
+}
+
+// Until the three tracks are filled in, the IN/OUT dropdowns would be empty and dead.
+// Swap them for a clear card with a button to Setup, and gray out Stamp.
+function applySetupState() {
+  const missing = missingSettings().length > 0;
+  $("needSetup").style.display = missing ? "block" : "none";
+  $("tplCard").style.display = missing ? "none" : "block";
+  if (!busy) setClass($("stamp"), "off", missing);
+  setClass($("swap"), "off", missing);
+  relayout();
 }
 
 // ---------- logging (dev log textarea + log.txt) ----------
@@ -103,10 +136,12 @@ function saveSettings() {
   if (!$("rememberSettings").checked || !currentKey) return;
   setPref("settings." + currentKey, JSON.stringify(Object.fromEntries(SETTING_IDS.map((id) => [id, $(id).value]))));
 }
-const optTc = (sel) => { const o = sel.options[sel.options.length ? Math.max(0, [...sel.options].findIndex((x) => x.value === sel.value)) : 0]; return o ? String(o.textContent).split(" ")[0] : ""; };
+// remembered picks are stored by the transition's "style" signature, not by a position on the timeline
+const styleOf = (selId) => (LAST && LAST.styles ? LAST.styles.find((s) => String(s.rep.idx) === $(selId).value) : null);
 function saveTemplatePicks() {
   if (!$("rememberTemplates").checked || !currentKey) return;
-  setPref("tpl." + currentKey, JSON.stringify({ IN: optTc($("tplIn")), OUT: optTc($("tplOut")) }));
+  const a = styleOf("tplIn"), b = styleOf("tplOut");
+  setPref("tpl." + currentKey, JSON.stringify({ IN: a ? a.sig : "", OUT: b ? b.sig : "" }));
 }
 
 // ---------- helpers ----------
@@ -274,17 +309,98 @@ function clearResults() {
 }
 
 // ---------- UI: scan ----------
-function fillSelect(selId, edges, type) {
+// A real transition has at least one VIDEO layer (an adjustment layer). A lone whoosh is not a transition.
+const hasVideo = (e) => e.group.some((p) => p.kind[0] === "V");
+
+// Group the transitions on the timeline into distinct STYLES, so the dropdowns list each look once
+// instead of every stamped copy. Same shape (tracks, timing around the edge) AND same effects = same style.
+async function buildStyles(A) {
+  const map = new Map();
+  for (const e of A.edges) {
+    if (!hasVideo(e)) continue;
+    const parts = [], effects = [];
+    for (const p of e.group) {
+      parts.push(`${p.kind}:${Math.round((p.s - e.t) * 30)}:${Math.round((p.e - p.s) * 30)}`);
+      if (p.kind[0] === "V") {
+        try {
+          const chain = await p.item.getComponentChain();
+          const n = chain.getComponentCount();
+          for (let i = 0; i < n; i++) effects.push(String(await chain.getComponentAtIndex(i).getDisplayName()));
+        } catch (err) {}
+      }
+    }
+    parts.sort();
+    const sig = parts.join("|") + "#" + effects.join(",");
+    let s = map.get(sig);
+    if (!s) {
+      const shown = [...new Set(effects.filter((n) => !/^(Opacity|Motion|Time Remapping)$/.test(n)))].slice(0, 2);
+      s = { sig, rep: e, n: 0, nIn: 0, nOut: 0, label: `${groupLabel(e.group)} · ${shown.join(", ") || "no effects"}` };
+      map.set(sig, s);
+    }
+    s.n++;
+    if (e.type === "IN") s.nIn++; else s.nOut++;
+  }
+  const styles = [...map.values()];
+  styles.forEach((s) => { s.label += s.n > 1 ? `  ×${s.n}` : ""; });
+  return styles;
+}
+
+function fillSelect(selId, styles, role) {
   const sel = $(selId), prev = sel.value;
   sel.innerHTML = "";
-  for (const e of edges.filter((x) => x.type === type)) {
+  // BOTH dropdowns list the same styles, so the Swap button can exchange the two picks.
+  for (const s of styles) {
     const o = document.createElement("option");
-    o.value = String(e.idx);
-    o.textContent = `${tc(e.t)}  (${groupLabel(e.group)})`;
+    o.value = String(s.rep.idx);
+    o.textContent = s.label;
     sel.appendChild(o);
   }
   if (!sel.options.length) { const o = document.createElement("option"); o.value = "0"; o.textContent = "none found: build one by hand first"; sel.appendChild(o); }
-  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  const prevValid = prev !== "0" && [...sel.options].some((o) => o.value === prev);
+  if (prevValid) { sel.value = prev; return; }
+  // default pick follows the role: the style used most at block starts for IN, at block ends for OUT
+  const best = [...styles].sort((a, b) => (role === "IN" ? b.nIn - a.nIn : b.nOut - a.nOut))[0];
+  if (best && (role === "IN" ? best.nIn : best.nOut) > 0) sel.value = String(best.rep.idx);
+}
+
+// Set a dropdown's pick. Setting selectedIndex as well as value makes UXP actually repaint the select.
+function setPick(selId, value) {
+  const sel = $(selId);
+  const i = [...sel.options].findIndex((o) => o.value === value);
+  if (i < 0) return;
+  try { sel.selectedIndex = i; } catch (e) {}
+  sel.value = value;
+}
+// The style each role would get by default (used most at block starts for IN, at block ends for OUT)
+function defaultPick(role) {
+  const st = LAST && LAST.styles ? LAST.styles : [];
+  const best = [...st].sort((a, b) => (role === "IN" ? b.nIn - a.nIn : b.nOut - a.nOut))[0];
+  return best ? String(best.rep.idx) : null;
+}
+// A persistent indicator: when the two picks are the exchanged versions of the defaults, both labels say "swapped".
+function updateSwapTag() {
+  const dIn = defaultPick("IN"), dOut = defaultPick("OUT");
+  const swapped = !!(dIn && dOut && dIn !== dOut && $("tplIn").value === dOut && $("tplOut").value === dIn);
+  $("inLbl").textContent = "IN (start of a block)" + (swapped ? "     ⇄ swapped" : "");
+  $("outLbl").textContent = "OUT (end of a block)" + (swapped ? "     ⇄ swapped" : "");
+  return swapped;
+}
+
+// Swap the two picks. The timeline and the dropdown lists don't change, only which transition plays which role.
+function swapPicks() {
+  if (missingSettings().length) return;
+  const a = $("tplIn").value, b = $("tplOut").value;
+  setPick("tplIn", b);
+  setPick("tplOut", a);
+  hideConfirm();
+  saveTemplatePicks();
+  const swapped = updateSwapTag();
+  $("summary").textContent = swapped
+    ? "Swapped. Your IN pick is now used at block ends, and your OUT pick at block starts. Nothing on the timeline changed."
+    : "Swapped back to the normal order. Nothing on the timeline changed.";
+  showWarnings([]);
+  setDetails("");
+  relayout();
 }
 function restoreTemplatePicks() {
   if (!$("rememberTemplates").checked || !currentKey) return;
@@ -292,9 +408,8 @@ function restoreTemplatePicks() {
     const saved = JSON.parse(getPref("tpl." + currentKey) || "null");
     if (!saved) return;
     for (const [selId, type] of [["tplIn", "IN"], ["tplOut", "OUT"]]) {
-      const sel = $(selId);
-      const o = [...sel.options].find((x) => String(x.textContent).split(" ")[0] === saved[type]);
-      if (o) sel.value = o.value;
+      const s = LAST && LAST.styles ? LAST.styles.find((x) => x.sig === saved[type]) : null;
+      if (s) $(selId).value = String(s.rep.idx);
     }
   } catch (e) {}
 }
@@ -307,7 +422,7 @@ async function scan(opts = {}) {
   updateSetupNote();
   const miss = missingSettings();
   if (miss.length) {
-    $("summary").textContent = "Set your tracks in the Setup tab first.";
+    $("summary").textContent = "";
     showWarnings([]); setDetails("");
     showTab("setup");
     return;
@@ -320,15 +435,20 @@ async function scan(opts = {}) {
     return;
   }
   const { edges, blocks } = LAST;
-  const withG = edges.filter((e) => e.group.length);
-  fillSelect("tplIn", withG, "IN");
-  fillSelect("tplOut", withG, "OUT");
+  const withV = edges.filter(hasVideo);
+  LAST.styles = await buildStyles(LAST);
+  fillSelect("tplIn", LAST.styles, "IN");
+  fillSelect("tplOut", LAST.styles, "OUT");
   restoreTemplatePicks();
+  updateSwapTag();
   const nIn = edges.filter((e) => e.type === "IN").length;
-  $("summary").textContent = `Found ${blocks.length} blocks on V${num("cutTrack")}: ${nIn} IN + ${edges.length - nIn} OUT edges. ${withG.length} already have a transition.`;
-  showWarnings(chk.warnings);
+  const loneWhooshes = edges.filter((e) => e.group.length && !hasVideo(e)).length;
+  $("summary").textContent = `Found ${blocks.length} blocks on V${num("cutTrack")}: ${nIn} IN + ${edges.length - nIn} OUT edges. ${withV.length} already have a transition (${LAST.styles.length} style${LAST.styles.length === 1 ? "" : "s"}).`;
+  const w = [...chk.warnings];
+  if (loneWhooshes) w.push(`${loneWhooshes} edge${loneWhooshes === 1 ? " has" : "s have"} a whoosh on A${num("sfxTrack")} but no adjustment layer. They don't count as transitions.`);
+  showWarnings(w);
   setDetails("");
-  if (!opts.quiet) log(`scan: ${blocks.length} blocks, ${edges.length} edges, ${withG.length} with transitions | tracks ${LAST.maxV}V/${LAST.maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
+  if (!opts.quiet) log(`scan: ${blocks.length} blocks, ${edges.length} edges, ${withV.length} with transitions (${LAST.styles.length} styles), ${loneWhooshes} whoosh-only | tracks ${LAST.maxV}V/${LAST.maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
 }
 
 // ---------- stamping ----------
@@ -342,7 +462,7 @@ async function stampEdges(dry) {
   const tOut = Number($("tplOut").value) > 0 ? edges[Number($("tplOut").value) - 1] : null;
   const chk = checkSetup(A, tIn, tOut);
   if (chk.errors.length) throw new Error(chk.errors.join(" "));
-  const res = { dry, planned: 0, nIn: 0, nOut: 0, hasTransition: 0, beforeZero: 0, noLane: 0, noTemplate: 0, stacked: [], skipped: [], warnings: chk.warnings, ok: null, added: null, expected: null };
+  const res = { dry, totalEdges: edges.length, planned: 0, nIn: 0, nOut: 0, hasTransition: 0, beforeZero: 0, noLane: 0, noTemplate: 0, stacked: [], skipped: [], warnings: chk.warnings, ok: null, added: null, expected: null };
   if (!tIn && !tOut) throw new Error("No template transitions found. Build one IN and one OUT by hand, then tap Refresh.");
   log(`${dry ? "preview" : "STAMP"} | IN template @${tIn ? tc(tIn.t) : "none"} | OUT template @${tOut ? tc(tOut.t) : "none"} | tracks ${maxV}V/${maxA}A | fps ${FPS.toFixed(3)} (${FPS_SRC})`);
   res.warnings.forEach((w) => log("  warning:", w));
@@ -358,7 +478,7 @@ async function stampEdges(dry) {
 
   const plan = [];
   for (const e of edges) {
-    if (e.group.length) { res.hasTransition++; continue; }
+    if (hasVideo(e)) { res.hasTransition++; continue; } // a lone whoosh is not a transition
     const tpl = e.type === "IN" ? tIn : tOut;
     if (!tpl || !tpl.group.length) { res.noTemplate++; res.skipped.push(`${e.type} @${tc(e.t)}: no template picked`); continue; }
     const delta = e.t - tpl.t;
@@ -437,7 +557,11 @@ async function stampEdges(dry) {
 function renderResult(res) {
   let s;
   if (res.dry) {
-    s = res.planned ? `Ready to stamp ${res.planned} transitions (${res.nIn} IN, ${res.nOut} OUT).` : "Nothing to stamp.";
+    s = res.planned
+      ? `Ready to stamp ${res.planned} transitions (${res.nIn} IN, ${res.nOut} OUT).`
+      : (res.hasTransition > 0
+        ? `Nothing to stamp: ${res.hasTransition} of ${res.totalEdges} edges already have a transition. To stamp again, undo (Ctrl+Z) or delete the old ones first.`
+        : "Nothing to stamp.");
   } else if (res.ok === false) {
     s = "Stamping FAILED. Nothing may have changed. Check the dev log.";
   } else if (!res.planned) {
@@ -532,7 +656,12 @@ async function census() {
 // dev: where is everything, and is any element a thin wide sliver (a stray line)?
 async function layoutProbe() {
   log("layout probe | active tab:", activeTab);
-  const ids = ["pStamp", "pSetup", "pDev", "scan", "stamp", "tplIn", "tplOut", "confirmBox", "summary", "warnings", "detailsToggle", "details", "options"];
+  try {
+    const sc = $("scroller"), r = sc.getBoundingClientRect();
+    log(`window: inner ${window.innerWidth}x${window.innerHeight} | html client ${document.documentElement.clientWidth}x${document.documentElement.clientHeight} | body client ${document.body.clientHeight}, scroll ${document.body.scrollHeight}`);
+    log(`scroller: style.height=${sc.style.height || "(none)"} | rect top ${Math.round(r.top)} h ${Math.round(r.height)} | client ${sc.clientHeight} scrollHeight ${sc.scrollHeight} | scrollTop ${sc.scrollTop} | can scroll: ${sc.scrollHeight > sc.clientHeight + 1}`);
+  } catch (e) { log("scroller metrics failed:", String(e)); }
+  const ids = ["pStamp", "pSetup", "pAbout", "pDev", "scan", "stamp", "tplIn", "tplOut", "confirmBox", "summary", "warnings", "detailsToggle", "details", "options"];
   for (const id of ids) {
     try {
       const el = $(id), r = el.getBoundingClientRect();
@@ -565,7 +694,8 @@ let busy = false;
 const setButtons = (disabled) => BUTTONS.forEach((id) => {
   try {
     $(id).disabled = disabled;
-    setClass($(id), "off", disabled); // styled blocks have no native disabled look
+    // styled blocks have no native disabled look; Stamp also stays gray while the tracks aren't set
+    setClass($(id), "off", disabled || (id === "stamp" && missingSettings().length > 0));
   } catch (e) {}
 });
 function guarded(fn, onDone) {
@@ -596,6 +726,7 @@ $("preview").addEventListener("click", guarded(() => stampEdges(true), renderRes
 // and the button then says "Stamp anyway". (Errors, like a missing track, do block.)
 $("stamp").addEventListener("click", guarded(async () => {
   hideConfirm();
+  if (missingSettings().length) { showTab("setup"); return; } // nothing to stamp with yet: take them to Setup
   const r = await stampEdges(true);
   renderResult(r);
   if (r.planned) {
@@ -619,6 +750,9 @@ $("cancelStamp").addEventListener("click", hideConfirm);
 // tabs
 $("tabStamp").addEventListener("click", () => showTab("stamp"));
 $("tabSetup").addEventListener("click", () => showTab("setup"));
+$("tabAbout").addEventListener("click", () => showTab("about"));
+$("goSetup").addEventListener("click", () => showTab("setup"));
+$("swap").addEventListener("click", swapPicks);
 $("tabDev").addEventListener("click", () => showTab("dev"));
 $("changeTracks").addEventListener("click", () => showTab("setup"));
 $("optToggle").addEventListener("click", () => {
@@ -650,7 +784,7 @@ SETTING_IDS.forEach((id) => $(id).addEventListener("change", () => {
   hideConfirm(); saveSettings(); updateTrackSummary(); updateSetupNote();
   if (!missingSettings().length) guarded(scan)();
 }));
-["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); }));
+["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); updateSwapTag(); }));
 $("rememberSettings").addEventListener("change", () => { setPref("rememberSettings", $("rememberSettings").checked ? "1" : "0"); saveSettings(); });
 $("rememberTemplates").addEventListener("change", () => { setPref("rememberTemplates", $("rememberTemplates").checked ? "1" : "0"); saveTemplatePicks(); });
 $("rememberSettings").checked = getPref("rememberSettings") === "1";
@@ -676,6 +810,7 @@ async function bridgeTick() {
     const id = cmd && cmd.id ? cmd.id : "?";
     const action = cmd && cmd.action;
     logEl.value = "";
+    if (cmd && cmd.tab) showTab(cmd.tab); // optional: look at a specific tab (dev testing)
     log(`[bridge] ${id}: ${action}`);
     let status = "ok", error = null;
     busy = true;
@@ -710,6 +845,9 @@ function applyDevMode() {
 $("devMode").addEventListener("change", applyDevMode);
 applyDevMode();
 
+// About tab: show the installed version (the dev copy and the release copy have different ones)
+try { $("aboutVersion").textContent = "Version " + require("uxp").versions.plugin; } catch (e) { $("aboutVersion").textContent = ""; }
+
 // ---------- follow the active project / sequence ----------
 // Switching projects or timelines used to leave the old dropdowns and results on screen.
 let activeSig = null;
@@ -730,4 +868,5 @@ async function watchActive() {
 setInterval(watchActive, 2000);
 
 // first scan on load
+fitScroller();
 guarded(scan)();

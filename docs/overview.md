@@ -15,7 +15,7 @@ Earlier attempts failed: a Premiere MCP server can't sense a cut or paste to a m
 ## What it does
 
 1. You build **one IN transition** and **one OUT transition** by hand, exactly the way you like them, anywhere on the timeline.
-2. In the panel you tell it which tracks you use, and pick those two transitions in the dropdowns.
+2. In the panel you tell it which tracks you use (Setup tab), and pick those two transitions in the dropdowns. Both dropdowns list every transition on the timeline; if you picked them the wrong way round, the **⇄** button swaps your IN and OUT picks without touching the timeline. The About tab shows the version, the author and where to find updates.
 3. **Stamp all edges** first works out what it would do and asks you to confirm ("Stamp 75 transitions?"). Only then does it copy your template transitions onto every other edge. (A separate Preview button exists in the Dev tab.)
 4. One Ctrl+Z undoes all of it.
 
