@@ -17,7 +17,7 @@ const num = (id) => Number($(id).value);
 const DEV_DIR = "file:D:/Codes/premiere-stamper"; // dev mode only: log.txt + cmd.json live here
 const CLIP = (ppro.Constants && ppro.Constants.TrackItemType && (ppro.Constants.TrackItemType.CLIP ?? ppro.Constants.TrackItemType.Clip)) ?? 1;
 const TICKS_PER_SEC = 254016000000;
-const SETTING_IDS = ["cutTrack", "tplTrack", "sfxTrack", "gapTol"];
+const SETTING_IDS = ["cutTrack", "tplTrack", "sfxTrack", "gapTol", "sfxLanes"];
 const BUTTONS = ["scan", "preview", "stamp", "confirmStamp", "setupDone"];
 
 // UXP's classList may not support toggle(name, force): use explicit add/remove
@@ -207,6 +207,9 @@ async function countTracks(sequence, kind) {
   return n;
 }
 const laneNum = (kind) => parseInt(kind.slice(1), 10);
+// How many audio lanes (starting at the whoosh lane and going DOWN) belong to a transition. Default 1 = just the whoosh lane.
+// Lanes below the whoosh lane usually hold music and dialogue, so more than one is opt-in (Setup > Options).
+const sfxLanes = () => { const n = Math.floor(num("sfxLanes")); return n >= 1 ? n : 1; };
 
 // every lane a stamped clone can land on: video from the transition track up, audio from the SFX lane down
 async function countLaneClips(sequence, maxV, maxA) {
@@ -251,13 +254,16 @@ async function analyzeEdges(sequence) {
       pieces.push({ item: it, kind: "V" + vn, s: secs(st), e: secs(en), sk: tk(st), ek: tk(en) });
     }
   }
-  for (const it of await audioClips(sequence, aTrack)) {
-    const st = await it.getStartTime(), en = await it.getEndTime();
-    pieces.push({ item: it, kind: "A" + aTrack, s: secs(st), e: secs(en), sk: tk(st), ek: tk(en) });
+  const aEnd = Math.min(aTrack + sfxLanes() - 1, maxA); // the whoosh lane plus any extra SFX lanes below it
+  for (let an = aTrack; an <= aEnd; an++) {
+    for (const it of await audioClips(sequence, an)) {
+      const st = await it.getStartTime(), en = await it.getEndTime();
+      pieces.push({ item: it, kind: "A" + an, s: secs(st), e: secs(en), sk: tk(st), ek: tk(en) });
+    }
   }
-  // lanes below the SFX lane: occupancy only (for sliding an SFX down)
+  // lanes below the SFX lanes: occupancy only (for sliding the SFX down)
   const audioOcc = {};
-  for (let an = aTrack + 1; an <= maxA; an++) {
+  for (let an = aEnd + 1; an <= maxA; an++) {
     audioOcc["A" + an] = [];
     for (const it of await audioClips(sequence, an)) audioOcc["A" + an].push([secs(await it.getStartTime()), secs(await it.getEndTime())]);
   }
@@ -745,17 +751,18 @@ async function stampEdges(dry) {
     for (let kk = 0; kk <= maxV; kk++) {
       if (vSpans.every((x) => laneFree("V" + (laneNum(x.kind) + kk), x.lo, x.hi))) { k = kk; break; }
     }
-    // AUDIO: each SFX stays on its lane unless occupied, then slides down to the first free lane
+    // AUDIO: the SFX lanes stay where they are unless occupied; then the WHOLE audio group slides down together
+    // to the first lanes where every piece fits (keeps their order, like video does).
     const aSpans = spans.filter((x) => x.kind[0] === "A");
     const aShift = [];
     let aOk = true;
-    for (const x of aSpans) {
+    if (aSpans.length) {
       let j = -1;
       for (let jj = 0; jj <= maxA; jj++) {
-        if (laneFree("A" + (laneNum(x.kind) + jj), x.lo, x.hi)) { j = jj; break; }
+        if (aSpans.every((x) => laneFree("A" + (laneNum(x.kind) + jj), x.lo, x.hi))) { j = jj; break; }
       }
       if (j < 0) aOk = false;
-      aShift.push(j);
+      aSpans.forEach(() => aShift.push(j));
     }
     if (k < 0 || !aOk) { res.noLane++; res.skipped.push(`${e.type} @${tc(e.t)}: no free track (${k < 0 ? "video" : "audio"} full)`); continue; }
 
@@ -1164,6 +1171,8 @@ SETTING_IDS.forEach((id) => $(id).addEventListener("change", () => {
   hideConfirm(); saveSettings(); updateTrackSummary(); updateSetupNote();
   if (!missingSettings().length) guarded(scan)();
 }));
+// a text field only commits when it loses focus; make Enter do that too, so the new value applies at once
+SETTING_IDS.forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $(id).blur(); }));
 ["tplIn", "tplOut"].forEach((id) => $(id).addEventListener("change", () => { hideConfirm(); saveTemplatePicks(); updateSwapTag(); updateCenterInfo(); }));
 $("rememberSettings").addEventListener("change", () => { setPref("rememberSettings", $("rememberSettings").checked ? "1" : "0"); saveSettings(); });
 $("rememberTemplates").addEventListener("change", () => { setPref("rememberTemplates", $("rememberTemplates").checked ? "1" : "0"); saveTemplatePicks(); });

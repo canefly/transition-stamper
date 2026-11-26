@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- **SFX lanes (A) option.** Transitions that use more than one audio lane (for example a whoosh on A3 and a second sound on A4) are now read and copied as one group. Setup > Show options > SFX lanes, default 1. On a collision the whole audio group slides down together.
+- Pressing Enter in a Setup field now applies it right away.
+
 ## 0.1.1
 
 **It now finds each transition's center and puts it exactly on the cut.**

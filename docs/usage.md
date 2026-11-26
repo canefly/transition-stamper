@@ -23,7 +23,7 @@ Install it first: see [install.md](install.md). Open it from **Window > UXP Plug
    - **Transitions start (V):** the lowest track your transitions live on. This track and every track above it is searched for transitions.
    - **Whoosh SFX (A):** the audio track your whooshes sit on.
 
-   Tap **Done**. (Under **Show options** you can have it remember these per project.)
+   Tap **Done**. (Under **Show options** you can have it remember these per project.) Also under **Show options**, **SFX lanes (A)** is how many audio lanes a transition uses, starting at the whoosh lane and going down. Leave it at 1 unless your transitions carry more than one SFX (for example a whoosh on A3 and a second sound on A4); set it to 2 and both are copied together.
 2. **Stamp tab.** The panel scans and tells you what it found: how many blocks, how many edges already have a transition.
 3. **Pick your templates.** The IN dropdown is the transition used at block starts; OUT is used at block ends. Each distinct transition on your timeline is listed once, with a count (`×24`). If you picked them the wrong way round, tap **⇄** to swap IN and OUT. Nothing on the timeline changes.
 4. Check the line under the dropdowns, for example "IN: center found at the split, exactly on the cut".
